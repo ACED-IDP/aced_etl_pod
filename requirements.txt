@@ -1,0 +1,6 @@
+git+https://github.com/ACED-IDP/gen3_util
+git+https://github.com/ACED-IDP/submission
+git+https://github.com/bmeg/iceberg-schema-tools
+
+# mac silicon, build from scratch, avoids Postgresql SCRAM authentication problem
+psycopg2
