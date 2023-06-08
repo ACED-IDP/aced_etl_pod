@@ -24,7 +24,7 @@ def generate_presigned_url(s3_client, client_method, method_parameters, expires_
             Params=method_parameters,
             ExpiresIn=expires_in
         )
-        logger.info("Got presigned URL: %s", url)
+        # logger.info("Got presigned URL: %s", url)
     except ClientError:
         logger.exception(
             "Couldn't get a presigned URL for client method '%s'.", client_method)
@@ -33,11 +33,8 @@ def generate_presigned_url(s3_client, client_method, method_parameters, expires_
 
 
 def usage_demo():
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
 
-    print('-'*88)
-    print("Welcome to the Amazon S3 presigned URL demo.")
-    print('-'*88)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('bucket', help="The name of the bucket.")
@@ -53,12 +50,10 @@ def usage_demo():
     url = generate_presigned_url(
         s3_client, client_action, {'Bucket': args.bucket, 'Key': args.key}, 1000)
 
-    print("Using the Requests package to send a request to the URL.")
     response = None
     if args.action == 'get':
         response = requests.get(url)
     elif args.action == 'put':
-        print("Putting data to the URL.")
         try:
             with open(args.key, 'r') as object_file:
                 object_text = object_file.read()
@@ -68,13 +63,9 @@ def usage_demo():
                   f"name of a file that exists on your computer.")
 
     if response is not None:
-        print("Got response:")
-        print(f"Status: {response.status_code}")
-        print(response.text)
+        print(f"Status: {args.bucket} {response.status_code} {url} {response.text}")
 
-    print('-'*88)
 
 
 if __name__ == '__main__':
     usage_demo()
-

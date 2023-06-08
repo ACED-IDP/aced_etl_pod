@@ -107,3 +107,33 @@ TODO
 ```sh
 TODO
 ```
+
+
+## development
+
+```commandline
+cd ~
+source ven/bin/activate
+
+# validate we can talk to the Gen3 endpoint and create all projects we have access to
+gen3_util projects touch --all
+
+# setup ~/.aws/credentials file
+grep default ~/.aws/credentials
+grep fencebot ~/.aws/credentials
+
+# validate that fence buckets exist and fencebot can write to them
+yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
+
+# copy meta data config from iceberg
+wget https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml
+
+
+# copy data
+aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/output.zip .
+# unzip data
+unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip 
+
+
+
+```
