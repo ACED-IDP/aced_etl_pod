@@ -77,29 +77,43 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
 
 ## use
 
-### Testing fence's ability to sign URLs
-
-```sh
- AWS_PROFILE=fencebot python3 ./put_object aced-development-data-bucket test2.txt put
-```
-
 ### Initializing programs and projects in the Gen3 endpoint 
 
+```commandline
+cd ~
+source venv/bin/activate
+gen3_util projects touch --all
+
+```
+
+### Testing fence's ability to sign URLs
+
+
 ```sh
-TODO
+# check to ensure aws setup correctly
+grep default ~/.aws/credentials
+grep fencebot ~/.aws/credentials  
+echo 'this is a test' > test.txt
+
+yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
 ```
 
 
-### Loading meta data into the Gen3 endpoint
+### Download study data from s3
 
 ```sh
-TODO
+# copy data
+aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/output.zip .
+# unzip data
+unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip  
 ```
 
 ### Loading files into indexd
 
 ```sh
-TODO
+# load all files and all metadata
+load_studies  
+
 ```
 
 ### Truncating sheepdog data
@@ -113,7 +127,7 @@ TODO
 
 ```commandline
 cd ~
-source ven/bin/activate
+source venv/bin/activate
 
 # validate we can talk to the Gen3 endpoint and create all projects we have access to
 gen3_util projects touch --all
@@ -123,10 +137,11 @@ grep default ~/.aws/credentials
 grep fencebot ~/.aws/credentials
 
 # validate that fence buckets exist and fencebot can write to them
+echo 'this is a test' > test.txt
 yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
 
 # copy meta data config from iceberg
-wget https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml
+curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
 
 
 # copy data
@@ -134,6 +149,8 @@ aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/
 # unzip data
 unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip 
 
+
+# load all data
 
 
 ```

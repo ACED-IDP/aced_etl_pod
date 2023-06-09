@@ -32,9 +32,8 @@ def generate_presigned_url(s3_client, client_method, method_parameters, expires_
     return url
 
 
-def usage_demo():
+def put_or_get():
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
-
 
     parser = argparse.ArgumentParser()
     parser.add_argument('bucket', help="The name of the bucket.")
@@ -66,6 +65,5 @@ def usage_demo():
         print(f"Status: {args.bucket} {response.status_code} {url} {response.text}")
 
 
-
 if __name__ == '__main__':
-    usage_demo()
+    put_or_get()

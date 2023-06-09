@@ -123,7 +123,9 @@ setup(
 
     entry_points={
         'console_scripts': [
-            # TODO: add entry points here
+            'load_studies=aced_etl.load_study:load_studies',
+            'put_signed_url=aced_etl.put_signed_url:put_or_get',
+            'load_study=aced_etl.load_study:_load_study',
         ],
     },
 
