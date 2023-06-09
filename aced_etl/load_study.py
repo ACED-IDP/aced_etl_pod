@@ -23,16 +23,21 @@ def run_cmd(command_line) -> str:
 @click.command()
 @click.argument('project_id')
 @click.argument('bucket_name')
-def _load_study(project_id: str, bucket_name: str):
+@click.option('--skip-upload/--no-skip-upload', is_flag=True, default=False, show_default=True,
+              help="Skip uploading files to the bucket.")
+@click.option('--skip-graph/--no-skip-graph', is_flag=True, default=False, show_default=True, help="Skip loading the graph.")
+@click.option('--skip-flat/--no-skip-flat', is_flag=True, default=False, show_default=True,
+              help="Skip loading the flat files into elastic.")
+def _load_study(project_id: str, bucket_name: str, skip_upload: bool, skip_graph: bool, skip_flat: bool):
     """Load a study into the data commons.
 
     PROJECT_ID is the name of the program-project to load.
     BUCKET_NAME is the name of the bucket to store data.
     """
-    load_study(project_id, bucket_name)
+    load_study(project_id, bucket_name, skip_upload, skip_graph, skip_flat)
 
 
-def load_study(project_id: str, bucket_name: str):
+def load_study(project_id: str, bucket_name: str, skip_upload=False, skip_graph=False, skip_flat=False):
     """Load a study into the data commons.
 
     \b
@@ -42,23 +47,26 @@ def load_study(project_id: str, bucket_name: str):
     program, project = project_id.split('-')
     assert pathlib.Path(f"studies/{project}").is_dir(), f"studies/{project} does not exist"
 
-    cmd = f"aced_submission files upload --program {program} --project {project} --bucket_name {bucket_name}  --document_reference_path studies/{project}  --duplicate_check"
-    print(run_cmd(cmd))
+    if not skip_upload:
+        cmd = f"aced_submission files upload --program {program} --project {project} --bucket_name {bucket_name}  --document_reference_path studies/{project}  --duplicate_check"
+        print(run_cmd(cmd))
 
-    cmd = f"aced_submission meta graph upload --source_path studies/{project}/extractions/ --program {program} --project $study  --dictionary_path https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
-    print(run_cmd(cmd))
+    if not skip_graph:
+        cmd = f"aced_submission meta graph upload --source_path studies/{project}/extractions/ --program {program} --project $study  --dictionary_path https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
+        print(run_cmd(cmd))
 
-    cmd = f"aced_submission meta flat denormalize-patient --input_path studies/{project}/extractions/Patient.ndjson"
-    print(run_cmd(cmd))
+    if not skip_flat:
+        cmd = f"aced_submission meta flat denormalize-patient --input_path studies/{project}/extractions/Patient.ndjson"
+        print(run_cmd(cmd))
 
-    cmd = f"aced_submission meta flat load --project_id {program}-{project} --index patient --path studies/{project}/extractions/Patient.ndjson --schema_path  https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
-    print(run_cmd(cmd))
+        cmd = f"aced_submission meta flat load --project_id {program}-{project} --index patient --path studies/{project}/extractions/Patient.ndjson --schema_path  https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
+        print(run_cmd(cmd))
 
-    cmd = f"aced_submission meta flat load --project_id {program}-{project} --index file --path studies/{project}/extractions/DocumentReference.ndjson --schema_path  https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
-    print(run_cmd(cmd))
+        cmd = f"aced_submission meta flat load --project_id {program}-{project} --index file --path studies/{project}/extractions/DocumentReference.ndjson --schema_path  https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
+        print(run_cmd(cmd))
 
-    cmd = f"aced_submission meta flat load --project_id {program}-{project} --index observation --path studies/{project}/extractions/Observation.ndjson --schema_path  https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
-    print(run_cmd(cmd))
+        cmd = f"aced_submission meta flat load --project_id {program}-{project} --index observation --path studies/{project}/extractions/Observation.ndjson --schema_path  https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json"
+        print(run_cmd(cmd))
 
 
 # TODO: read from config
@@ -73,9 +81,15 @@ Colon_Cancer aced-development-stanford-data-bucket
 
 
 @click.command()
-def load_studies():
+@click.option('--skip-upload/--no-skip-upload', is_flag=True, default=False, show_default=True,
+              help="Skip uploading files to the bucket.")
+@click.option('--skip-graph/--no-skip-graph', is_flag=True, default=False, show_default=True,
+              help="Skip loading the graph.")
+@click.option('--skip-flat/--no-skip-flat', is_flag=True, default=False, show_default=True,
+              help="Skip loading the flat files into elastic.")
+def load_studies(skip_upload: bool, skip_graph: bool, skip_flat: bool):
     """Load all studies into the data commons."""
     if click.confirm('Load all studies. Do you want to continue?'):
         for study_bucket in STUDIES:
             study, bucket = study_bucket.split(' ')
-            load_study(project_id=f"aced-{study}", bucket_name=bucket)
+            load_study(project_id=f"aced-{study}", bucket_name=bucket, skip_upload=skip_upload, skip_graph=skip_graph)
