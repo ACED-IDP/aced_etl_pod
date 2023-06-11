@@ -93,6 +93,7 @@ gen3_util projects touch --all
 # check to ensure aws setup correctly
 grep default ~/.aws/credentials
 grep fencebot ~/.aws/credentials  
+
 echo 'this is a test' > test.txt
 
 yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
@@ -138,7 +139,7 @@ grep fencebot ~/.aws/credentials
 
 # validate that fence buckets exist and fencebot can write to them
 echo 'this is a test' > test.txt
-yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
+yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot put_signed_url  " + . + " test.txt put"  ' etl.yaml   | sh 
 
 # copy meta data config from iceberg
 curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
@@ -152,5 +153,7 @@ unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip
 
 # load all data
 
+* configure study to bucket mapping in etl.yaml
+* see scripts/load_studies
 
 ```
