@@ -154,6 +154,6 @@ unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip
 # load all data
 
 * configure study to bucket mapping in etl.yaml
-* see scripts/load_studies
+* see scripts/load_studies/load_studies
 
 ```

@@ -19,3 +19,6 @@ esac
 ./load_all Lung_Cancer aced-development-manchester-data-bucket
 ./load_all Prostate_Cancer aced-development-stanford-data-bucket
 ./load_all Colon_Cancer aced-development-stanford-data-bucket
+
+# load static meta data
+aced_submission meta discovery load

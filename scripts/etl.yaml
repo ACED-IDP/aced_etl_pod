@@ -1,3 +1,5 @@
+# snippet from fence
+# TODO - remove once provided by etl helm chart
 ALLOWED_DATA_UPLOAD_BUCKETS:
 - aced-development-data-bucket
 - aced-development-ohsu-data-bucket
