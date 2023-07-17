@@ -10,9 +10,19 @@ Docker-->Helm: image: dependencies
 Helm->ETL: context: environment variables, mounted files
 
 
-opt submission workflow
-User->ETL: login
-ETL->DeployedCommons: create programs, projects
-ETL->DeployedCommons: upload files
-ETL->DeployedCommons: upload metadata
+opt synthetic studies workflow
+DevOpsUser->ETL: login
+ETL->DeployedCommons: create programs, projects(requestor)
+ETL->DeployedCommons: upload files(indexd,s3)
+ETL->DeployedCommons: deploy metadata(graph,elastic)
+end
+
+
+opt submitted studies workflow
+User->DeployedCommons: create programs, projects(requestor)
+User->DeployedCommons: upload files(indexd,s3)
+User->DeployedCommons: upload metadata(indexd,s3)
+DevOpsUser->ETL: login
+ETL->DeployedCommons: download metadata(indexd,s3)
+ETL->DeployedCommons: deploy metadata(graph,elastic)
 end

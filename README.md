@@ -10,6 +10,8 @@ etl worker pod
 
 ![image](./docs/aced-etl.svg)
 
+`Note`: the submitted studies workflow will be replaced by a job
+
 ## implementation
 
 ### Docker k8s pod image
@@ -67,7 +69,11 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
   * TODO: The Helm chart will make the `fence.ALLOWED_DATA_UPLOAD_BUCKETS` available Where? How?
 
 * Staging/Production:
-  * The ETL user will download ~/studies and ~/output from the S3 bucket.
+  * synthetic studies
+    * The ETL user will download ~/studies and ~/output from the S3 bucket.
+  * submitted studies
+    * The analyst will use gen3_utils, etc. to create the studies and upload metadata and files to the S3 bucket.
+    * The ETL user will download submitted metadata and place into into ~/studies
 
 * Local:
   * The ETL user can mount the local directories into the ETL pod at ~/studies and ~/output
@@ -143,17 +149,35 @@ yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot put_signed_url  
 
 # copy meta data config from iceberg
 curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
+```
 
+## synthetic studies
 
-# copy data
+```sh
+#
+# copy data from s3 for synthetic studies
+#
 aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/output.zip .
 # unzip data
 unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip 
+```
 
+## submitted studies
 
-# load all data
+```sh
+#
+# copy meta data from submitted studies
+#
+# grep the results of this command to find the data you want to load
+gen3_util  meta ls
+# then download the metadata for the study you want to load from the s3 bucket
+gen3 file download-single <did>
+# Place it into `studies/` 
+```
+
+## load data
+
 
 * configure study to bucket mapping in etl.yaml
 * see scripts/load_studies/load_studies
 
-```
