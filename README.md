@@ -94,6 +94,11 @@ gen3_util projects touch --all
 
 ### Testing fence's ability to sign URLs
 
+This test will ensure that the AWS credentials are setup correctly and that fence can sign URLs.
+It does NOT call fence directly, but rather uses the same credentials that fence uses to sign URLs.
+
+Before running this test, ensure that the `ALLOWED_DATA_UPLOAD_BUCKETS` is set in the [etl.yaml](scripts/etl.yaml) file.
+
 
 ```sh
 # check to ensure aws setup correctly
@@ -102,35 +107,12 @@ grep fencebot ~/.aws/credentials
 
 echo 'this is a test' > test.txt
 
-yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
+yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' scripts/etl.yaml  | sh
 ```
 
 
-### Download study data from s3
 
-```sh
-# copy data
-aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/output.zip .
-# unzip data
-unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip  
-```
-
-### Loading files into indexd
-
-```sh
-# load all files and all metadata
-load_studies  
-
-```
-
-### Truncating sheepdog data
-
-```sh
-TODO
-```
-
-
-## development
+### Use
 
 ```commandline
 cd ~
@@ -151,7 +133,12 @@ yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot put_signed_url  
 curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
 ```
 
-## synthetic studies
+### load data
+
+* see scripts/load_studies/load_studies
+
+
+#### synthetic studies
 
 ```sh
 #
@@ -162,7 +149,7 @@ aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/
 unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip 
 ```
 
-## submitted studies
+#### submitted studies
 
 ```sh
 #
@@ -172,12 +159,15 @@ unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip
 gen3_util  meta ls
 # then download the metadata for the study you want to load from the s3 bucket
 gen3 file download-single <did>
-# Place it into `studies/` 
+# Place it into `studies/` and run load_all_studies.sh
 ```
+Note: TODO this step to be replaced by a job
 
-## load data
 
 
-* configure study to bucket mapping in etl.yaml
-* see scripts/load_studies/load_studies
 
+### Other
+
+#### Truncating sheepdog data
+
+see [scripts/truncate_sheepdog](scripts/truncate_sheepdog.sql)
