@@ -34,7 +34,7 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
     * environmental variables
     * TODO how will the Helm chart configure ~/.aws directory
  
-    The `/creds` directory contains all credential files required for the ETL process.
+    The `/creds` directory contains all credential files required for the ETL process, setup by helm chart.
 
         ```
         /creds
@@ -48,7 +48,7 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
         │   └── username -> ..data/username
         └── user.yaml
         ```
-    The `~/.aws` directory will have:
+    **You** must configure the `~/.aws` directory from fence config and admin creds, the directory MUST have:
   
    ```
         ~/.aws
@@ -67,6 +67,7 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
     ```
   
   * TODO: The Helm chart will make the `fence.ALLOWED_DATA_UPLOAD_BUCKETS` available Where? How?
+  * TODO: How could the helm chart configure ~/.aws directory?
 
 * Staging/Production:
   * synthetic studies
@@ -107,7 +108,8 @@ grep fencebot ~/.aws/credentials
 
 echo 'this is a test' > test.txt
 
-yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' scripts/etl.yaml  | sh
+yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot  put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
+
 ```
 
 
