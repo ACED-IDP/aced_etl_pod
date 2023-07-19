@@ -10,6 +10,8 @@ etl worker pod
 
 ![image](./docs/aced-etl.svg)
 
+`Note`: the submitted studies workflow will be replaced by a job
+
 ## implementation
 
 ### Docker k8s pod image
@@ -32,7 +34,7 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
     * environmental variables
     * TODO how will the Helm chart configure ~/.aws directory
  
-    The `/creds` directory contains all credential files required for the ETL process.
+    The `/creds` directory contains all credential files required for the ETL process, setup by helm chart.
 
         ```
         /creds
@@ -46,7 +48,7 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
         │   └── username -> ..data/username
         └── user.yaml
         ```
-    The `~/.aws` directory will have:
+    **You** must configure the `~/.aws` directory from fence config and admin creds, the directory MUST have:
   
    ```
         ~/.aws
@@ -65,9 +67,14 @@ See [docker/etl-docker.md](./docker/etl-docker.md)
     ```
   
   * TODO: The Helm chart will make the `fence.ALLOWED_DATA_UPLOAD_BUCKETS` available Where? How?
+  * TODO: How could the helm chart configure ~/.aws directory?
 
 * Staging/Production:
-  * The ETL user will download ~/studies and ~/output from the S3 bucket.
+  * synthetic studies
+    * The ETL user will download ~/studies and ~/output from the S3 bucket.
+  * submitted studies
+    * The analyst will use gen3_utils, etc. to create the studies and upload metadata and files to the S3 bucket.
+    * The ETL user will download submitted metadata and place into into ~/studies
 
 * Local:
   * The ETL user can mount the local directories into the ETL pod at ~/studies and ~/output
@@ -88,6 +95,11 @@ gen3_util projects touch --all
 
 ### Testing fence's ability to sign URLs
 
+This test will ensure that the AWS credentials are setup correctly and that fence can sign URLs.
+It does NOT call fence directly, but rather uses the same credentials that fence uses to sign URLs.
+
+Before running this test, ensure that the `ALLOWED_DATA_UPLOAD_BUCKETS` is set in the [etl.yaml](scripts/etl.yaml) file.
+
 
 ```sh
 # check to ensure aws setup correctly
@@ -96,35 +108,13 @@ grep fencebot ~/.aws/credentials
 
 echo 'this is a test' > test.txt
 
-yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot python3 ./put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
-```
-
-
-### Download study data from s3
-
-```sh
-# copy data
-aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/output.zip .
-# unzip data
-unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip  
-```
-
-### Loading files into indexd
-
-```sh
-# load all files and all metadata
-load_studies  
+yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot  put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
 
 ```
 
-### Truncating sheepdog data
-
-```sh
-TODO
-```
 
 
-## development
+### Use
 
 ```commandline
 cd ~
@@ -143,17 +133,43 @@ yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot put_signed_url  
 
 # copy meta data config from iceberg
 curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
+```
+
+### load data
+
+* see scripts/load_studies/load_studies
 
 
-# copy data
+#### synthetic studies
+
+```sh
+#
+# copy data from s3 for synthetic studies
+#
 aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/output.zip .
 # unzip data
 unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip 
-
-
-# load all data
-
-* configure study to bucket mapping in etl.yaml
-* see scripts/load_studies/load_studies
-
 ```
+
+#### submitted studies
+
+```sh
+#
+# copy meta data from submitted studies
+#
+# grep the results of this command to find the data you want to load
+gen3_util  meta ls
+# then download the metadata for the study you want to load from the s3 bucket
+gen3 file download-single <did>
+# Place it into `studies/` and run load_all_studies.sh
+```
+Note: TODO this step to be replaced by a job
+
+
+
+
+### Other
+
+#### Truncating sheepdog data
+
+see [scripts/truncate_sheepdog](scripts/truncate_sheepdog.sql)

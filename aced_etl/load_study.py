@@ -4,6 +4,8 @@ import subprocess
 import click
 import logging
 
+from gen3_util.config import ensure_auth
+
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 

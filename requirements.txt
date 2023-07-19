@@ -1,9 +1,8 @@
-gen3_util @ git+https://github.com/ACED-IDP/gen3_util
+gen3_util>=0.0.4
+iceberg_tools>=0.0.4
+# deliberately not using pypi for aced_submission
 aced_submission @ git+https://github.com/ACED-IDP/submission
-iceberg_tools @ git+https://github.com/bmeg/iceberg-schema-tools.git@feature/data-pfb
 
-
-# mac silicon, build from scratch, avoids Postgresql SCRAM authentication problem
 psycopg2
 
 boto3
