@@ -16,7 +16,9 @@ RUN apt-get -y --no-install-recommends install  \
            postgresql-client \
            python3-dev \
            unzip \
-           vim
+           vim \
+           autoconf \
+           libtoolize
 
 RUN rm -rf /var/lib/apt/lists/*
 
@@ -33,5 +35,6 @@ SHELL ["/bin/bash", "-c"]
 RUN python3 -m venv venv
 RUN source venv/bin/activate && pip install 'git+https://github.com/ACED-IDP/aced_etl_pod' && pip install --no-cache-dir psycopg2
 RUN source venv/bin/activate && pip install yq
+RUN source venv/bin/activate && pip install wheel
 
 
