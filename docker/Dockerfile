@@ -2,7 +2,6 @@
 FROM python:3.9.16-slim-buster
 
 # install dependencies
-
 RUN apt-get -y update
 RUN apt-get -y --no-install-recommends install  \
            build-essential \
@@ -18,7 +17,7 @@ RUN apt-get -y --no-install-recommends install  \
            unzip \
            vim \
            autoconf \
-           libtoolize
+           libtool
 
 RUN rm -rf /var/lib/apt/lists/*
 
