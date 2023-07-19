@@ -16,7 +16,7 @@ RUN apt-get -y --no-install-recommends install  \
            python3-dev \
            unzip \
            vim \
-           autoconf \
+           automake \
            libtool
 
 RUN rm -rf /var/lib/apt/lists/*
