@@ -14,10 +14,10 @@ fi
 study="$1"
 bucket="$2"
 
-schema=https://aced-public.s3.us-west-2.amazonaws.com/simplified-fhir.json
+schema=https://aced-public.s3.us-west-2.amazonaws.com/aced.json
 
 # the user (outside of the etl pod) has already loaded the data - this line only applies to synthetic data we are loading here
-# aced_submission files upload --program aced --project $study --bucket_name $bucket  --document_reference_path studies/$study  --duplicate_check
+#aced_submission files upload --program aced --project $study --bucket_name $bucket  --document_reference_path studies/$study  --duplicate_check
 
 # test if the study has been simplified
 if [ ! -f studies/$study/extractions/ResearchStudy.ndjson ]; then
@@ -25,7 +25,7 @@ if [ ! -f studies/$study/extractions/ResearchStudy.ndjson ]; then
     iceberg data simplify studies/$study/ studies/$study/extractions/ --schema_path  $schema --dialect PFB
 fi
 # load all meta into graph db
-aced_submission meta graph upload --source_path studies/$study/extractions/ --program aced --project $study  --dictionary_path $schema
+aced_submission meta graph upload --source_path studies/$study/extractions/ --project_id aced-$study  --dictionary_path $schema
 # load patient file if it exists
 if [ -f studies/$study/extractions/Patient.ndjson ]; then
   aced_submission meta flat denormalize-patient --input_path studies/$study/extractions/Patient.ndjson
