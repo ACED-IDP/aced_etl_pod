@@ -100,6 +100,7 @@ It does NOT call fence directly, but rather uses the same credentials that fence
 
 Before running this test, ensure that the `ALLOWED_DATA_UPLOAD_BUCKETS` is set in the [etl.yaml](scripts/etl.yaml) file.
 
+Note: probably the easiest way to get this information for now is to log into the fence pod and see `fence-config.yaml`
 
 ```sh
 # check to ensure aws setup correctly
