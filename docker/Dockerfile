@@ -32,8 +32,16 @@ RUN rm awscliv2.zip
 
 SHELL ["/bin/bash", "-c"]
 RUN python3 -m venv venv
+RUN source venv/bin/activate && pip install wheel
 RUN source venv/bin/activate && pip install 'git+https://github.com/ACED-IDP/aced_etl_pod' && pip install --no-cache-dir psycopg2
 RUN source venv/bin/activate && pip install yq
-RUN source venv/bin/activate && pip install wheel
+
+# TODO - should this belong in etl pod repo / helm?
+RUN curl https://raw.githubusercontent.com/ACED-IDP/aced_etl_pod/main/scripts/load_all -o load_all
+RUN chmod +x load_all
+RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
+
+RUN mkdir ~/.aws
+RUN mkdir ~/.gen3
 
 
