@@ -18,6 +18,8 @@ name: Build and publish ACED ETL image
 
 on:
   push:
+    tags:
+      - v**
 
 jobs:
   build:
