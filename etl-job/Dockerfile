@@ -37,11 +37,18 @@ RUN source venv/bin/activate && pip install 'git+https://github.com/ACED-IDP/ace
 RUN source venv/bin/activate && pip install yq
 
 # TODO - should this belong in etl pod repo / helm?
-RUN curl https://raw.githubusercontent.com/ACED-IDP/aced_etl_pod/main/scripts/load_all -o load_all
-RUN chmod +x load_all
 RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
 
 RUN mkdir ~/.aws
 RUN mkdir ~/.gen3
 
+COPY . /root
+ENV PYTHONUNBUFFERED=1
+RUN chmod +x /root/entrypoint.sh
+RUN chmod +x load_all
 
+RUN mkdir /root/studies
+RUN ls -la /root
+
+ENTRYPOINT [ "/root/entrypoint.sh" ]
+CMD [ "python", "fhir_import.py" ]
