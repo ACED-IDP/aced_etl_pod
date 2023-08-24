@@ -42,13 +42,14 @@ RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/confi
 RUN mkdir ~/.aws
 RUN mkdir ~/.gen3
 
-COPY . /root
 ENV PYTHONUNBUFFERED=1
+COPY . /root
 RUN chmod +x /root/entrypoint.sh
-RUN chmod +x load_all
+RUN chmod +x /root/load_all
 
 RUN mkdir /root/studies
 RUN ls -la /root
-
+RUN pwd
+RUN ls -l /root
 ENTRYPOINT [ "/root/entrypoint.sh" ]
 CMD [ "python", "fhir_import.py" ]
