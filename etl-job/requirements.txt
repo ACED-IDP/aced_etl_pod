@@ -4,9 +4,6 @@ iceberg_tools>=0.0.4
 aced_submission @ git+https://github.com/ACED-IDP/submission@feature/job-access_token
 
 psycopg2
-
 boto3
-
 yp
-
 click

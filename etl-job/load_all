@@ -14,20 +14,6 @@ set -e
 #
 # check setup of pod complete
 #
-if [[ ! -f ~/.aws/credentials ]]; then
-    echo "Please setup aws cli"
-    exit 1
-fi
-
-if [[ ! -f ~/.gen3/credentials.json ]]; then
-    echo "Please setup gen3 cli"
-    exit 1
-fi
-
-if [[ ! -f ~/etl.yaml ]]; then
-    echo "Please setup etl.yaml with ALLOWED_DATA_UPLOAD_BUCKETS from fence"
-    exit 1
-fi
 
 if [[ ! -f ~/config.yaml ]]; then
     echo "Please setup config.yaml with from iceberg-schema-tools"
@@ -54,10 +40,6 @@ if [ -z "$schema" ]; then
 fi
 
 echo "Using default schema $schema"
-
-# ensure the project_id exists
-
-gen3_util projects touch $project_id
 
 
 # the user (outside of the etl pod) has already loaded the data

@@ -1,5 +1,6 @@
 import os
 import logging
+import pathlib
 import sys
 import json
 import subprocess
@@ -46,8 +47,13 @@ def _get_object_id(input_data) -> str:
 
 def _can_create(output, program, user) -> bool:
     """Check if user can create a project in the given program."""
-    assert f"/programs/{program}" in user['resources'], f"/programs/{program} not found in user resources"
+
     can_create = True
+
+    if f"/programs/{program}" not in user['resources']:
+        output['logs'].append(f"/programs/{program} not found in user resources")
+        can_create = False
+
     required_resources = [
         '/services/sheepdog/submission/program',
         '/services/sheepdog/submission/project',
@@ -79,20 +85,24 @@ def _can_create(output, program, user) -> bool:
 
 def _download_and_unzip(object_id, file_path, output) -> bool:
     """Download and unzip object_id to file_path"""
-    cmd = f"gen3 file download-single {object_id} --path /tmp/{object_id}".split()
+    cmd = f"gen3_util files cp {object_id} /tmp/{object_id}".split()
     result = subprocess.run(cmd)
     if result.returncode != 0:
         output['logs'].append(f"ERROR DOWNLOADING {object_id} /tmp/{object_id}")
-        output['logs'].append(result.stderr.read().decode())
-        output['logs'].append(result.stdout.read().decode())
+        if result.stderr:
+            output['logs'].append(result.stderr.read().decode())
+        if result.stdout:
+            output['logs'].append(result.stdout.read().decode())
         return False
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
-    cmd = f"unzip /tmp/{object_id}-d {file_path}".split()
+    cmd = f"unzip -j /tmp/{object_id}/*.zip -d {file_path}".split()
     result = subprocess.run(cmd)
     if result.returncode != 0:
         output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
-        output['logs'].append(result.stderr.read().decode())
-        output['logs'].append(result.stdout.read().decode())
+        if result.stderr:
+            output['logs'].append(result.stderr.read().decode())
+        if result.stdout:
+            output['logs'].append(result.stdout.read().decode())
         return False
 
     output['logs'].append(f"UNZIPPED {file_path}")
@@ -101,32 +111,38 @@ def _download_and_unzip(object_id, file_path, output) -> bool:
 
 def _load_all(study, project_id, output) -> bool:
     """Use script to load study."""
-    cmd = f"load_all {study} {project_id}".split()
-    result = subprocess.run(cmd)
+    cmd = f"./load_all".split()
+    output['logs'].append(f"LOADING: {cmd}")
+    my_env = os.environ.copy()
+    my_env['study'] = study
+    my_env['project_id'] = project_id
+    my_env['schema'] = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
+
+    result = subprocess.run(cmd, env=my_env, capture_output=True, text=True)
     if result.returncode != 0:
         output['logs'].append(f"ERROR LOADING {study}")
-        output['logs'].append(result.stderr.read().decode())
-        output['logs'].append(result.stdout.read().decode())
+        output['logs'].append(result.stderr)
+        output['logs'].append(result.stdout)
         return False
 
     output['logs'].append(f"LOADED {study}")
+    output['logs'].append(result.stderr)
+    output['logs'].append(result.stdout)
     return True
 
 
 def _main():
     """Main function"""
 
-    auth = _auth(_get_token())
+    token = _get_token()
+    auth = _auth(token)
+
     # print("[out] authorized successfully")
 
     # print("[out] retrieving user info...")
     user = _user(auth)
 
     output = {'user': user, 'files': [], 'logs': []}
-
-    # for _ in pathlib.Path('.').glob('*.*'):
-    #     if _.is_file():
-    #         output['files'].append(str(_))
 
     # output['env'] = {k: v for k, v in os.environ.items()}
 
@@ -142,7 +158,15 @@ def _main():
         object_id = _get_object_id(input_data)
         if object_id:
             if _download_and_unzip(object_id, file_path, output):
+
+                for _ in pathlib.Path(file_path).glob('*'):
+                    output['files'].append(str(_))
+
                 _load_all(project, f"{program}-{project}", output)
+
+                for _ in pathlib.Path(file_path).glob('*'):
+                    output['files'].append(str(_))
+
         else:
             output['logs'].append(f"OBJECT ID NOT FOUND")
 

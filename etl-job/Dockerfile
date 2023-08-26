@@ -33,16 +33,15 @@ RUN rm awscliv2.zip
 SHELL ["/bin/bash", "-c"]
 RUN python3 -m venv venv
 RUN source venv/bin/activate && pip install wheel
-RUN source venv/bin/activate && pip install 'git+https://github.com/ACED-IDP/aced_etl_pod' && pip install --no-cache-dir psycopg2
 RUN source venv/bin/activate && pip install yq
-
-# TODO - should this belong in etl pod repo / helm?
-RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
 
 RUN mkdir ~/.aws
 RUN mkdir ~/.gen3
 
 ENV PYTHONUNBUFFERED=1
+COPY ./requirements.txt /root
+RUN source venv/bin/activate && pip install -r requirements.txt && pip install --no-cache-dir psycopg2
+
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
 RUN chmod +x /root/load_all
@@ -51,5 +50,9 @@ RUN mkdir /root/studies
 RUN ls -la /root
 RUN pwd
 RUN ls -l /root
+
+# TODO - should this belong in etl pod repo / helm?
+RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
+
 ENTRYPOINT [ "/root/entrypoint.sh" ]
 CMD [ "python", "fhir_import.py" ]
