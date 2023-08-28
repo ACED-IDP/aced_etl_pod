@@ -61,14 +61,20 @@ aced_submission meta graph upload --source_path studies/$study/extractions/ --pr
 if [ -f studies/$study/extractions/Patient.ndjson ]; then
   aced_submission meta flat denormalize-patient --input_path studies/$study/extractions/Patient.ndjson
   aced_submission meta flat load --project_id $project_id --index patient --path studies/$study/extractions/Patient.ndjson --schema_path  $schema
+else
+  aced_submission meta flat load --project_id $project_id --index patient --path /dev/null --schema_path  $schema
 fi
 # load DocumentReference if it exists
 if [ -f studies/$study/extractions/DocumentReference.ndjson ]; then
   aced_submission meta flat load --project_id $project_id --index file --path studies/$study/extractions/DocumentReference.ndjson --schema_path  $schema
+else
+  aced_submission meta flat load --project_id $project_id --index file --path /dev/null --schema_path  $schema
 fi
 # load Observation if it exists
 if [ -f studies/$study/extractions/Observation.ndjson ]; then
   aced_submission meta flat load --project_id $project_id --index observation --path studies/$study/extractions/Observation.ndjson --schema_path  $schema
+else
+  aced_submission meta flat load --project_id $project_id --index observation --path /dev/null --schema_path  $schema
 fi
 
 echo "Done loading meta data for $study to $project_id, please run \"gen3_util projects add resource $project_id\" to add policies to Arborist"
