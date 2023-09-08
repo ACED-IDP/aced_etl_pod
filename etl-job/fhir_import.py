@@ -13,13 +13,15 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 def _get_token() -> str:
     """Get ACCESS_TOKEN from environment"""
     # print("[out] retrieving access token...")
-    return os.environ['ACCESS_TOKEN']
+    return os.environ.get('ACCESS_TOKEN', None)
 
 
 def _auth(access_token: str) -> Gen3Auth:
     """Authenticate using ACCESS_TOKEN"""
     # print("[out] authorizing...")
-    return Gen3Auth(refresh_file=f"accesstoken:///{access_token}")
+    if access_token:
+        return Gen3Auth(refresh_file=f"accesstoken:///{access_token}")
+    return Gen3Auth()
 
 
 def _user(auth: Gen3Auth) -> dict:
@@ -95,7 +97,7 @@ def _download_and_unzip(object_id, file_path, output) -> bool:
             output['logs'].append(result.stdout.read().decode())
         return False
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
-    cmd = f"unzip -j /tmp/{object_id}/*.zip -d {file_path}".split()
+    cmd = f"unzip -o -j /tmp/{object_id}/*.zip -d {file_path}".split()
     result = subprocess.run(cmd)
     if result.returncode != 0:
         output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
