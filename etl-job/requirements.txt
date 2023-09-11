@@ -1,7 +1,6 @@
 gen3_util>=0.0.6rc4
 iceberg_tools>=0.0.4
-# deliberately not using pypi for aced_submission
-aced_submission @ git+https://github.com/ACED-IDP/submission@feature/job-access_token
+aced_submission>=0.0.7rc1
 
 psycopg2
 boto3

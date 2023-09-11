@@ -77,4 +77,4 @@ else
   aced_submission meta flat load --project_id $project_id --index observation --path /dev/null --schema_path  $schema
 fi
 
-echo "Done loading meta data for $study to $project_id, please run \"gen3_util projects add resource $project_id\" to add policies to Arborist"
+echo "Done loading meta data for $study to $project_id"

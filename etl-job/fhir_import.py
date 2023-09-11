@@ -20,12 +20,14 @@ def _auth(access_token: str) -> Gen3Auth:
     """Authenticate using ACCESS_TOKEN"""
     # print("[out] authorizing...")
     if access_token:
+        # use access token from environment (set by sower)
         return Gen3Auth(refresh_file=f"accesstoken:///{access_token}")
+    # no access token, use refresh token set in default ~/.gen3/credentials.json location
     return Gen3Auth()
 
 
 def _user(auth: Gen3Auth) -> dict:
-    """Get user info"""
+    """Get user info from arborist"""
     return auth.curl('/user/user').json()
 
 
@@ -48,7 +50,13 @@ def _get_object_id(input_data) -> str:
 
 
 def _can_create(output, program, user) -> bool:
-    """Check if user can create a project in the given program."""
+    """Check if user can create a project in the given program.
+
+    Args:
+        output: output dict the json that will be returned to the caller
+        program: program Gen3 program(-project)
+        user: user dict from arborist (aka profile)
+    """
 
     can_create = True
 
@@ -159,20 +167,20 @@ def _main():
     if can_create:
         object_id = _get_object_id(input_data)
         if object_id:
+            # get the meta data file
             if _download_and_unzip(object_id, file_path, output):
 
+                # tell user what files were found
                 for _ in pathlib.Path(file_path).glob('*'):
                     output['files'].append(str(_))
 
+                # load the study into the database and elastic search
                 _load_all(project, f"{program}-{project}", output)
-
-                for _ in pathlib.Path(file_path).glob('*'):
-                    output['files'].append(str(_))
 
         else:
             output['logs'].append(f"OBJECT ID NOT FOUND")
 
-    # note, only the last output is returned to the caller
+    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
     print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
