@@ -1,176 +1,52 @@
 # etl
-etl worker pod
+etl worker job/pod
 
 ## use case
 
 > As an ACED devops engineer, in order to maintain the ACED datasets,I need to be able to run the ETL process on a regular basis, leveraging the environment provided to the etl k8s pod.
 
 
-## design
-
-![image](./docs/aced-etl.svg)
-
-`Note`: the submitted studies workflow will be replaced by a job
-
-## implementation
-
-### Docker k8s pod image
-
-See [docker/etl-docker.md](./docker/etl-docker.md)
-
-### Assumptions:ETL image file structure
-
-* All environments (local, staging, production):
-
-  * The root home directory will have virtual environment with all dependencies loaded
-    * aced_submission
-    * gen3_util
-    * iceberg
-    * aws cli
-    * jq, vi, curl, psql, etc. 
-  
-  * The Helm chart will mount the following directories into the ETL pod: 
-    * `/creds` - contains all credential files required for the ETL process.
-    * environmental variables
-    * TODO how will the Helm chart configure ~/.aws directory
+## Implementation: Docker k8s job/pod image
  
-    The `/creds` directory contains all credential files required for the ETL process, setup by helm chart.
+![image](./docs/image-setup.png)
 
-        ```
-        /creds
-        ├── credentials.json
-        ├── sheepdog-creds
-        │   ├── database -> ..data/database
-        │   ├── dbcreated -> ..data/dbcreated
-        │   ├── host -> ..data/host
-        │   ├── password -> ..data/password
-        │   ├── port -> ..data/port
-        │   └── username -> ..data/username
-        └── user.yaml
-        ```
-    **You** must configure the `~/.aws` directory from fence config and admin creds, the directory MUST have:
+See [etl-job/README](./etl-job/README.md)
+
+* The root home directory will have virtual environment with all dependencies loaded
+  * aced_submission
+  * gen3_util
+  * iceberg
+  * jq, vi, curl, psql, etc. 
   
-   ```
-        ~/.aws
-        ├── config
-        └── credentials
+* The Helm chart will mount the following directories into the ETL pod: 
+  * environmental variables for database access etc.
+
+> As an ACED analyst, in order to make the data available to researchers, I need to be able to upload files and associate them with a study, patient, specimen or observation
+
+ 
+## Dependencies
+
+![image](./docs/project-access.png)
+
+* Before a project can be loaded, a user in the submitter role must create in the authorization system (Arborist)
   
-        # TODO: How will the Helm chart configure ~/.aws directory?
-        cat ~/.aws/credentials
-        [fencebot] 
-        aws_access_key_id = YYYYY
-        aws_secret_access_key = YYYYY
-        [etlbot] 
-        aws_access_key_id = YYYYY
-        aws_secret_access_key = YYYYY
+![image](./docs/file-upload.png)
 
-    ```
-  
-  * TODO: The Helm chart will make the `fence.ALLOWED_DATA_UPLOAD_BUCKETS` available Where? How?
-  * TODO: How could the helm chart configure ~/.aws directory?
+* Before meta data can be generated, files must be uploaded to the data bucket and an object_id created in indexd
 
-* Staging/Production:
-  * synthetic studies
-    * The ETL user will download ~/studies and ~/output from the S3 bucket.
-  * submitted studies
-    * The analyst will use gen3_utils, etc. to create the studies and upload metadata and files to the S3 bucket.
-    * The ETL user will download submitted metadata and place into into ~/studies
+## Metadata generation
 
-* Local:
-  * The ETL user can mount the local directories into the ETL pod at ~/studies and ~/output
-
-          * `~/studies` - meta data files for the studies to be loaded into the Gen3 endpoint.
-          * `~/output` - files to be loaded into indexd
-
-## use
-
-### Initializing programs and projects in the Gen3 endpoint 
+![image](./docs/metadata-generate.png)
 
 ```commandline
-cd ~
-source venv/bin/activate
-gen3_util projects touch --all
-
+# optionally edit the metadata
+# files created from the previous step
+ls -1 <DIR>
+DocumentReference.ndjson
+ResearchStudy.ndjson
 ```
+## Metadata publication
 
-### Testing fence's ability to sign URLs
+Copy the metadata to the bucket and publish the metadata to the portal
 
-This test will ensure that the AWS credentials are setup correctly and that fence can sign URLs.
-It does NOT call fence directly, but rather uses the same credentials that fence uses to sign URLs.
-
-Before running this test, ensure that the `ALLOWED_DATA_UPLOAD_BUCKETS` is set in the [etl.yaml](scripts/etl.yaml) file.
-
-Note: probably the easiest way to get this information for now is to log into the fence pod and see `fence-config.yaml`
-
-```sh
-# check to ensure aws setup correctly
-grep default ~/.aws/credentials
-grep fencebot ~/.aws/credentials  
-
-echo 'this is a test' > test.txt
-
-yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot  put_signed_url  " + . + " test.txt put"  ' etl.yaml  | sh
-
-```
-
-
-
-### Use
-
-```commandline
-cd ~
-source venv/bin/activate
-
-# validate we can talk to the Gen3 endpoint and create all projects we have access to
-gen3_util projects touch --all
-
-# setup ~/.aws/credentials file
-grep default ~/.aws/credentials
-grep fencebot ~/.aws/credentials
-
-# validate that fence buckets exist and fencebot can write to them
-echo 'this is a test' > test.txt
-yq -rc '.ALLOWED_DATA_UPLOAD_BUCKETS[]  | "AWS_PROFILE=fencebot put_signed_url  " + . + " test.txt put"  ' etl.yaml   | sh 
-
-# copy meta data config from iceberg
-curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
-```
-
-### load data
-
-* see scripts/load_studies/load_studies
-
-
-#### synthetic studies
-
-```sh
-#
-# copy data from s3 for synthetic studies
-#
-aws s3 cp s3://aced-development/studies.zip . ; aws s3 cp s3://aced-development/output.zip .
-# unzip data
-unzip studies.zip ; unzip output.zip ; rm studies.zip ; rm output.zip 
-```
-
-#### submitted studies
-
-```sh
-#
-# copy meta data from submitted studies
-#
-# grep the results of this command to find the data you want to load
-gen3_util  meta ls
-# then download the metadata for the study you want to load from the s3 bucket
-gen3 file download-single <did>
-# Place it into `studies/` and run load_all_studies.sh
-```
-Note: TODO this step to be replaced by a job
-
-
-
-
-### Other
-
-#### Truncating sheepdog data
-
-see [scripts/truncate_sheepdog](scripts/truncate_sheepdog.sql)
+![image](./docs/metadata-publish.png)
