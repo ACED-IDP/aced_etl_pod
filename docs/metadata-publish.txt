@@ -1,0 +1,18 @@
+
+
+title ACED ETL: Meta data publish
+
+gen3_util->gen3_util: validate, zip
+gen3_util->indexd: meta publish DIR <program>-<project>
+indexd-->gen3_util: object_id
+
+
+gen3_util->sower.fhir_import: <program>-<project> object_id
+sower.fhir_import->s3: download, unzip
+sower.fhir_import->postgres: load graph
+sower.fhir_import->elastic_search: load flat
+
+
+
+
+note left of gen3_util:data available for portal

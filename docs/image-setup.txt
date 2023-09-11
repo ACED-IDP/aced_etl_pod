@@ -1,0 +1,4 @@
+title ACED ETL: Image Setup
+
+DevOps->Docker: build, save to quay.io
+DevOps->Helm.Sower: deploy deploy image

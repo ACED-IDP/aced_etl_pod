@@ -1,0 +1,14 @@
+
+
+title ACED ETL: Project Access
+
+note left of gen3_util: User with <program> write access\ne.g. submitter@institution.edu
+
+gen3_util->Requestor: projects add resource <program>-<project>
+
+note left of gen3_util: User with <program> signing authority\ne.g. admin@institution.edu
+gen3_util->Requestor:access sign --project_id test-myproject
+Requestor->Arborist: resource:/programs/<program>/projects/<project>
+Requestor->Arborist:policy:submitter@institution.edu programs.<program>.projects.<project>_reader
+Requestor->Arborist:policy:submitter@institution.edu programs.<program>.projects.<project>_writer
+
