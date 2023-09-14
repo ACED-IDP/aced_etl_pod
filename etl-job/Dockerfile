@@ -40,7 +40,12 @@ RUN mkdir ~/.gen3
 
 ENV PYTHONUNBUFFERED=1
 COPY ./requirements.txt /root
-RUN source venv/bin/activate && pip install -r requirements.txt && pip install --no-cache-dir psycopg2
+RUN source venv/bin/activate && pip install -r requirements.txt
+
+# move these out of requirements.txt, so that builds are quicker when we change
+RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.4"
+RUN source venv/bin/activate && pip install "gen3_util>=0.0.7rc3"
+RUN source venv/bin/activate && pip install "aced_submission>=0.0.7rc6"
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
@@ -55,4 +60,4 @@ RUN ls -l /root
 RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
 
 ENTRYPOINT [ "/root/entrypoint.sh" ]
-CMD [ "python", "fhir_import.py" ]
+CMD [ "python", "fhir_import_export.py" ]

@@ -5,7 +5,12 @@ import sys
 import json
 import subprocess
 
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC
 from gen3.auth import Gen3Auth
+
+from aced_submission.fhir_store import fhir_get
+from gen3_util.config import Config
+from gen3_util.meta.uploader import cp
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
@@ -93,6 +98,48 @@ def _can_create(output, program, user) -> bool:
     return can_create
 
 
+def _can_read(output, program, project, user) -> bool:
+    """Check if user can read a project in the given program.
+
+    Args:
+        output: output dict the json that will be returned to the caller
+        program: program Gen3 program(-project)
+        user: user dict from arborist (aka profile)
+    """
+
+    can_read = True
+
+    if f"/programs/{program}" not in user['resources']:
+        output['logs'].append(f"/programs/{program} not found in user resources")
+        can_read = False
+
+    required_resources = [
+        f"/programs/{program}/projects/{project}"
+    ]
+    for required_resource in required_resources:
+        if required_resource not in user['resources']:
+            output['logs'].append(f"{required_resource} not found in user resources")
+            can_read = False
+        else:
+            output['logs'].append(f"HAS RESOURCE {required_resource}")
+
+    required_services = [
+        f"/programs/{program}/projects/{project}"
+    ]
+    for required_service in required_services:
+        if required_service not in user['authz']:
+            output['logs'].append(f"{required_service} not found in user authz")
+            can_read = False
+        else:
+            if {'method': 'read-storage', 'service': '*'} not in user['authz'][required_service]:
+                output['logs'].append(f"read-storage not found in user authz for {required_service}")
+                can_read = False
+            else:
+                output['logs'].append(f"HAS SERVICE read-storage on resource {required_service}")
+
+    return can_read
+
+
 def _download_and_unzip(object_id, file_path, output) -> bool:
     """Download and unzip object_id to file_path"""
     cmd = f"gen3_util files cp {object_id} /tmp/{object_id}".split()
@@ -141,6 +188,28 @@ def _load_all(study, project_id, output) -> bool:
     return True
 
 
+def _get(input_data, output, program, project, user) -> str:
+    """Export data from the fhir store to bucket, returns object_id."""
+    can_read = _can_read(output, program, project, user)
+    if not can_read:
+        output['logs'].append(f"No read permissions on {program}-{project}")
+        return None
+
+    study_path = f"studies/{project}"
+    project_id = f"{program}-{project}"
+
+    logs = fhir_get(f"{program}-{project}", study_path, DEFAULT_ELASTIC)
+    output['logs'].extend(logs)
+
+    # zip and upload the exported files to bucket
+    config = Config()
+    cp_result = cp(config=config, from_=study_path, project_id=project_id, ignore_state=False)
+    output['logs'].append(cp_result['msg'])
+    object_id = cp_result['object_id']
+
+    return object_id
+
+
 def _main():
     """Main function"""
 
@@ -159,10 +228,27 @@ def _main():
     input_data = _input_data()
     program, project = _get_program_project(input_data)
 
+    method = input_data.get("method", None)
+    assert method, "input data must contain a `method`"
+    if method.lower() == 'put':
+        # read from bucket, write to fhir store
+        _put(input_data, output, program, project, user)
+    elif method.lower() == 'get':
+        # read fhir store, write to bucket
+        object_id = _get(input_data, output, program, project, user)
+        output['object_id'] = object_id
+    else:
+        raise Exception(f"unknown method {method}")
+
+    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
+    print(f"[out] {json.dumps(output, separators=(',', ':'))}")
+
+
+def _put(input_data, output, program, project, user):
+    """Import data from bucket to graph, flat and fhir store."""
     # check permissions
     can_create = _can_create(output, program, user)
     output['logs'].append(f"CAN CREATE: {can_create}")
-
     file_path = f"/root/studies/{project}/"
     if can_create:
         object_id = _get_object_id(input_data)
@@ -179,9 +265,6 @@ def _main():
 
         else:
             output['logs'].append(f"OBJECT ID NOT FOUND")
-
-    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
 if __name__ == '__main__':

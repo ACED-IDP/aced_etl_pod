@@ -77,4 +77,7 @@ else
   aced_submission meta flat load --project_id $project_id --index observation --path /dev/null --schema_path  $schema
 fi
 
+# save meta data to es fhir index
+aced_submission fhir put --project_id $project_id studies/$study
+
 echo "Done loading meta data for $study to $project_id"
