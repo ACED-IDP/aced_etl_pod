@@ -1,0 +1,11 @@
+
+
+title ACED ETL: File Upload
+
+note left of gen3_util: User with <program> write access\ne.g. submitter@institution.edu
+
+gen3_util->indexd: files put <program>-<project>  DIR BUCKET [identifiers]
+fence-->gen3_util: signed url
+gen3_util->s3: file
+
+

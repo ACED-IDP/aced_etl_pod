@@ -1,0 +1,11 @@
+
+
+title ACED ETL: Meta data generation
+
+gen3_util->indexd: meta import indexd  <program>-<project>  DIR
+indexd-->gen3_util: file info
+gen3_util->sheepdog: get nodes  <program>-<project>
+sheepdog-->gen3_util: existing metadata
+gen3_util->gen3_util: Writes FHIR resources to DIR
+
+
