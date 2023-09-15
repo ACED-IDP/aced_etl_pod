@@ -39,5 +39,5 @@ jobs:
     - name: Build
       run: |
         docker login quay.io
-        docker build -t quay.io/ohsu-comp-bio/aced-etl:x86 ./docker
-        docker push quay.io/ohsu-comp-bio/aced-etl:x86
+        docker build -t quay.io/ohsu-comp-bio/aced-etl:x86 ./etl-job
+        docker push quay.io/ohsu-comp-bio/aced-etl
