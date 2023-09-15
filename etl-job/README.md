@@ -25,10 +25,10 @@ docker push quay.io/ohsu-comp-bio/aced-etl-job
 docker buildx create --name aced-builder --bootstrap --use
 
 # build and push ( this took about 20 min ! )
-docker buildx build --platform linux/amd64,linux/arm64 -t quay.io/ohsu-comp-bio/aced-etl-job:testing --push .
+docker buildx build --platform linux/amd64,linux/arm64 -t quay.io/ohsu-comp-bio/aced-etl:latest --push .
 
 # confirm it worked
-docker buildx imagetools inspect quay.io/ohsu-comp-bio/aced-etl-job:testing | grep Platform
+docker buildx imagetools inspect quay.io/ohsu-comp-bio/aced-etl:testing | grep Platform
   Platform:    linux/amd64
   Platform:    linux/arm64
   Platform:    unknown/unknown
