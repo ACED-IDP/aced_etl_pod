@@ -4,13 +4,21 @@ import pathlib
 import sys
 import json
 import subprocess
+import click
+import yaml
 
-from aced_submission.meta_flat_load import DEFAULT_ELASTIC
 from gen3.auth import Gen3Auth
 
-from aced_submission.fhir_store import fhir_get
+from aced_submission.fhir_store import fhir_get, fhir_put
+from aced_submission.meta_graph_load import meta_upload
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
+
 from gen3_util.config import Config
 from gen3_util.meta.uploader import cp
+
+from pathlib import Path
+
+from iceberg_tools.data.simplifier import simplify_directory
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
@@ -167,24 +175,88 @@ def _download_and_unzip(object_id, file_path, output) -> bool:
 
 
 def _load_all(study, project_id, output) -> bool:
-    """Use script to load study."""
-    cmd = f"./load_all".split()
-    output['logs'].append(f"LOADING: {cmd}")
-    my_env = os.environ.copy()
-    my_env['study'] = study
-    my_env['project_id'] = project_id
-    my_env['schema'] = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
+    config = "/root/config.yaml"
+    if not os.path.isfile(config):
+        output['logs'].append("config file does not exist")
+        return False
 
-    result = subprocess.run(cmd, env=my_env, capture_output=True, text=True)
-    if result.returncode != 0:
-        output['logs'].append(f"ERROR LOADING {study}")
-        output['logs'].append(result.stderr)
-        output['logs'].append(result.stdout)
+    if study is None or study == "":
+        output['logs'].append("Please provide a study name")
+        return False
+
+    if project_id is None or project_id == "":
+        output['logs'].append("Please provide a project_id (program-project)")
+        return False
+
+    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
+
+    try:
+        program, project = project_id.split('-')
+        assert program, output['logs'].append("program is required")
+        assert project, output['logs'].append("project is required")
+
+        researchStudy = f'studies/{study}/extractions/ResearchStudy.ndjson'
+        if not os.path.isfile(researchStudy):
+            output['logs'].append("Study not Simplified. Simplifying Study...")
+            simplify_directory(f'studies/{study}', pattern="**/*.*",
+                               output_path=f'studies/{study}/extractions',
+                               schema_path=schema, dialect='PFB',
+                               config_path='config.yaml')
+
+        meta_upload(source_path=f'studies/{study}/extractions/',
+                    program=program, project=project,
+                    credentials_file="/root/.gen3/credentials.json",
+                    silent=False, dictionary_path=schema, config_path=config)
+
+        patient_path = f'studies/{study}/extractions/Patient.ndjson'
+
+        if os.path.isfile(patient_path):
+            denormalize_patient(patient_path)
+            load_flat(project_id=project_id, index="patient",
+                      path=patient_path, limit=None,
+                      elastic_url=DEFAULT_ELASTIC,
+                      schema_path=schema, output_path=None)
+        else:
+            load_flat(projecet_id=project_id, index="patient",
+                      path='/dev/null', limit=None,
+                      elastic_url=DEFAULT_ELASTIC,
+                      schema_path=schema, output_path=None)
+
+        observation_path = f'studies/{study}/extractions/Observation.ndjson'
+        if os.path.isfile(observation_path):
+            load_flat(project_id=project_id, index="observation",
+                      path=observation_path, limit=None,
+                      elastic_url=DEFAULT_ELASTIC,
+                      schema_path=schema, output_path=None)
+        else:
+            load_flat(project_id=project_id, index="observation",
+                      path='/dev/null', limit=None,
+                      elastic_url=DEFAULT_ELASTIC,
+                      schema_path=schema, output_path=None)
+
+        file_path = f'studies/{study}/extractions/DocumentReference.ndjson'
+        if os.path.isfile(file_path):
+            load_flat(project_id=project_id, index="file", path=file_path,
+                      limit=None, elastic_url=DEFAULT_ELASTIC,
+                      schema_path=schema, output_path=None)
+        else:
+            load_flat(project_id=project_id, index="file", path='/dev/null',
+                      limit=None, elastic_url=DEFAULT_ELASTIC,
+                      schema_path=schema, output_path=None)
+
+        logs = fhir_put(project_id, path=f'studies/{study}',
+                        elastic_url=DEFAULT_ELASTIC)
+        yaml.dump(logs, sys.stdout, default_flow_style=False)
+
+    except Exception as e:
+        output['logs'].append(f"An Exception Occured: {str(e)}")
+        output['logs'].append(sys.stderr)
+        output['logs'].append(sys.stdout)
         return False
 
     output['logs'].append(f"LOADED {study}")
-    output['logs'].append(result.stderr)
-    output['logs'].append(result.stdout)
+    output['logs'].append(sys.stderr)
+    output['logs'].append(sys.stdout)
     return True
 
 
@@ -203,16 +275,15 @@ def _get(input_data, output, program, project, user) -> str:
 
     # zip and upload the exported files to bucket
     config = Config()
-    cp_result = cp(config=config, from_=study_path, project_id=project_id, ignore_state=False)
+    cp_result = cp(config=config, from_=study_path,
+                   project_id=project_id, ignore_state=False)
     output['logs'].append(cp_result['msg'])
     object_id = cp_result['object_id']
 
     return object_id
 
 
-def _main():
-    """Main function"""
-
+def main():
     token = _get_token()
     auth = _auth(token)
 
@@ -241,7 +312,7 @@ def _main():
         raise Exception(f"unknown method {method}")
 
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    print(f"[out] {json.dumps(output, separators=(',', ':'))}")
+    # print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
 def _put(input_data, output, program, project, user):
@@ -264,8 +335,8 @@ def _put(input_data, output, program, project, user):
                 _load_all(project, f"{program}-{project}", output)
 
         else:
-            output['logs'].append(f"OBJECT ID NOT FOUND")
+            output['logs'].append("OBJECT ID NOT FOUND")
 
 
 if __name__ == '__main__':
-    _main()
+    main()
