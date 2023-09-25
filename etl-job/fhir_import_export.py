@@ -250,13 +250,14 @@ def _load_all(study, project_id, output) -> bool:
 
     except Exception as e:
         output['logs'].append(f"An Exception Occured: {str(e)}")
-        output['logs'].append(sys.stderr)
-        output['logs'].append(sys.stdout)
+        output['logs'].append(f"LOADED {study}")
+        if logs is not None:
+            output['logs'].extend(logs)
         return False
 
     output['logs'].append(f"LOADED {study}")
-    output['logs'].append(sys.stderr)
-    output['logs'].append(sys.stdout)
+    if logs is not None:
+        output['logs'].extend(logs)
     return True
 
 
@@ -312,7 +313,7 @@ def main():
         raise Exception(f"unknown method {method}")
 
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    # print(f"[out] {json.dumps(output, separators=(',', ':'))}")
+    print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
 def _put(input_data, output, program, project, user):
