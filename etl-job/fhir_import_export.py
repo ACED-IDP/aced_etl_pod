@@ -190,13 +190,15 @@ def _load_all(study, project_id, output) -> bool:
 
     schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
 
+    logs = None
+
     try:
         program, project = project_id.split('-')
         assert program, output['logs'].append("program is required")
         assert project, output['logs'].append("project is required")
 
-        researchStudy = f'studies/{study}/extractions/ResearchStudy.ndjson'
-        if not os.path.isfile(researchStudy):
+        research_study = f'studies/{study}/extractions/ResearchStudy.ndjson'
+        if not os.path.isfile(research_study):
             output['logs'].append("Study not Simplified. Simplifying Study...")
             simplify_directory(f'studies/{study}', pattern="**/*.*",
                                output_path=f'studies/{study}/extractions',
@@ -217,7 +219,7 @@ def _load_all(study, project_id, output) -> bool:
                       elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
         else:
-            load_flat(projecet_id=project_id, index="patient",
+            load_flat(project_id=project_id, index="patient",
                       path='/dev/null', limit=None,
                       elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
@@ -249,7 +251,7 @@ def _load_all(study, project_id, output) -> bool:
         yaml.dump(logs, sys.stdout, default_flow_style=False)
 
     except Exception as e:
-        output['logs'].append(f"An Exception Occured: {str(e)}")
+        output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"LOADED {study}")
         if logs is not None:
             output['logs'].extend(logs)
