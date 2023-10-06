@@ -17,7 +17,8 @@ RUN apt-get -y --no-install-recommends install  \
            unzip \
            vim \
            automake \
-           libtool
+           libtool \
+           ca-certificates
 
 RUN rm -rf /var/lib/apt/lists/*
 
@@ -45,7 +46,7 @@ RUN source venv/bin/activate && pip install -r requirements.txt
 # move these out of requirements.txt, so that builds are quicker when we change
 RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.4"
 RUN source venv/bin/activate && pip install "gen3_util>=0.0.7"
-RUN source venv/bin/activate && pip install "aced-submission==0.0.8rc2" --no-cache
+RUN source venv/bin/activate && pip install "aced-submission==0.0.8rc2"
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
@@ -58,6 +59,9 @@ RUN ls -l /root
 
 # TODO - should this belong in etl pod repo / helm?
 RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
+RUN chmod +x /root/add-ucl-to-ca-certs.sh
+RUN /root/add-ucl-to-ca-certs.sh
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 ENTRYPOINT [ "/root/entrypoint.sh" ]
 CMD [ "python", "fhir_import_export.py" ]
