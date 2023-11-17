@@ -13,6 +13,8 @@ sower.fhir_import->arborist: /user
 arborist-->sower.fhir_import: policies, resources
 sower.fhir_import->sower.fhir_import: check authorization
 sower.fhir_import->s3: download, unzip
+sower.fhir_import->sower.fhir_import: simplify
+
 sower.fhir_import->postgres: load graph
 sower.fhir_import->elastic_search: load flat
 
