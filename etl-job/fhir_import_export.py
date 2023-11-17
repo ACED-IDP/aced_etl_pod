@@ -78,8 +78,6 @@ def _can_create(output, program, user) -> bool:
         can_create = False
 
     required_resources = [
-        '/services/sheepdog/submission/program',
-        '/services/sheepdog/submission/project',
         f"/programs/{program}/projects"
     ]
     for required_resource in required_resources:
@@ -96,12 +94,6 @@ def _can_create(output, program, user) -> bool:
         if required_service not in user['authz']:
             output['logs'].append(f"{required_service} not found in user authz")
             can_create = False
-        else:
-            if {'method': '*', 'service': 'sheepdog'} not in user['authz'][required_service]:
-                output['logs'].append(f"sheepdog not found in user authz for {required_service}")
-                can_create = False
-            else:
-                output['logs'].append(f"HAS SERVICE sheepdog on resource {required_service}")
 
     return can_create
 
@@ -188,7 +180,7 @@ def _load_all(study, project_id, output) -> bool:
         output['logs'].append("Please provide a project_id (program-project)")
         return False
 
-    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
+    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced.json'
 
     logs = None
 
