@@ -17,7 +17,8 @@ RUN apt-get -y --no-install-recommends install  \
            unzip \
            vim \
            automake \
-           libtool
+           libtool \
+           ca-certificates
 
 RUN rm -rf /var/lib/apt/lists/*
 
@@ -58,6 +59,9 @@ RUN ls -l /root
 
 # TODO - should this belong in etl pod repo / helm?
 RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
+RUN chmod +x /root/add-ucl-to-ca-certs.sh
+RUN /root/add-ucl-to-ca-certs.sh
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 ENTRYPOINT [ "/root/entrypoint.sh" ]
 CMD [ "python", "fhir_import_export.py" ]
