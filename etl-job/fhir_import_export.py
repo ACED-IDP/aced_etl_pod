@@ -142,15 +142,14 @@ def _can_read(output, program, project, user) -> bool:
 
 def _download_and_unzip(object_id, file_path, output) -> bool:
     """Download and unzip object_id to file_path"""
-    cmd = f"gen3_util files cp {object_id} /tmp/{object_id}".split()
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        output['logs'].append(f"ERROR DOWNLOADING {object_id} /tmp/{object_id}")
-        if result.stderr:
-            output['logs'].append(result.stderr.read().decode())
-        if result.stdout:
-            output['logs'].append(result.stdout.read().decode())
+    from gen3_util.files.downloader import cp as gen3_cp
+    try:
+        gen3_cp(object_id, file_path)
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred: {str(e)}")
+        output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
         return False
+
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
     cmd = f"unzip -o -j /tmp/{object_id}/*.zip -d {file_path}".split()
     result = subprocess.run(cmd)
