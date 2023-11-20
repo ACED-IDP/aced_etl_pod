@@ -289,7 +289,9 @@ def main():
     # print("[out] retrieving user info...")
     user = _user(auth)
 
-    output = {'user': user, 'files': [], 'logs': []}
+    output = {'user': None, 'files': [], 'logs': []}
+    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
+    print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
     # output['env'] = {k: v for k, v in os.environ.items()}
 
