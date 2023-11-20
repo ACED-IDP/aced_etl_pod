@@ -12,6 +12,7 @@ from gen3.auth import Gen3Auth
 from aced_submission.fhir_store import fhir_get, fhir_put
 from aced_submission.meta_graph_load import meta_upload
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
+from gen3.file import Gen3File
 
 from gen3_util.config import Config
 from gen3_util.meta.uploader import cp
@@ -142,9 +143,11 @@ def _can_read(output, program, project, user) -> bool:
 
 def _download_and_unzip(object_id, file_path, output) -> bool:
     """Download and unzip object_id to file_path"""
-    from gen3_util.files.downloader import cp as gen3_cp
     try:
-        gen3_cp(object_id, file_path)
+        token = _get_token()
+        auth = _auth(token)
+        file_client = Gen3File(auth)
+        file_client.download_single(object_id, file_path)
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
