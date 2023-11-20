@@ -147,7 +147,7 @@ def _download_and_unzip(object_id, file_path, output) -> bool:
         token = _get_token()
         auth = _auth(token)
         file_client = Gen3File(auth)
-        file_client.download_single(object_id, file_path)
+        file_client.download_single(object_id, f"/tmp/{object_id}")
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
