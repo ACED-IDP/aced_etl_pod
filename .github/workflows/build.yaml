@@ -33,9 +33,14 @@ jobs:
     - name: Set Variables
       shell: bash
       run: |
-        echo "No OVERRIDE_TAG_NAME input provided, defaulting to current branch/tag name..."
-        echo "IMAGE_TAG=$(echo ${GITHUB_REF#refs/*/} | tr / _)"
-        echo "IMAGE_TAG=$(echo ${GITHUB_REF#refs/*/} | tr / _)" >> $GITHUB_ENV
+        BRANCH = $(echo ${GITHUB_REF#refs/*/} | tr / _)
+        if [[ $BRANCH == 'main' ]]; then
+          IMAGE_TAG=latest
+        else
+          IMAGE_TAG=$BRANCH
+        fi
+        echo "IMAGE_TAG=$IMAGE_TAG"
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
     - name: Build
       run: |
