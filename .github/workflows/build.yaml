@@ -33,7 +33,7 @@ jobs:
     - name: Set Variables
       shell: bash
       run: |
-        BRANCH = $(echo ${GITHUB_REF#refs/*/} | tr / _)
+        BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
         if [[ $BRANCH == 'main' ]]; then
           IMAGE_TAG=latest
         else
