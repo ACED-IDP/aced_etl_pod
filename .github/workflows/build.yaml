@@ -40,5 +40,5 @@ jobs:
     - name: Build
       run: |
         docker login quay.io
-        docker build -t quay.io/ohsu-comp-bio/aced-etl ./etl-job
+        docker build -t quay.io/ohsu-comp-bio/aced-etl:${{ env.IMAGE_TAG }} ./etl-job
         docker push quay.io/ohsu-comp-bio/aced-etl:${{ env.IMAGE_TAG }}
