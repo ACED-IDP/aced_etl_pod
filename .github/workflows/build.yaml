@@ -30,20 +30,21 @@ jobs:
         username: ${{ secrets.QUAY_USERNAME }}
         password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 
-    - name: Set Variables
-      shell: bash
+    - name: Build and push image
       run: |
+        # Set Image tag to the branch name
         BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
-        if [[ $BRANCH == 'main' ]]; then
-          IMAGE_TAG=latest
-        else
-          IMAGE_TAG=$BRANCH
-        fi
         echo "IMAGE_TAG=$IMAGE_TAG"
-        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
-    - name: Build
-      run: |
+        # Login to Quay.io and build image
         docker login quay.io
-        docker build -t quay.io/ohsu-comp-bio/aced-etl:${{ env.IMAGE_TAG }} ./etl-job
-        docker push quay.io/ohsu-comp-bio/aced-etl:${{ env.IMAGE_TAG }}
+        REPO=quay.io/ohsu-comp-bio/aced-etl
+        docker build -t $REPO:${{ env.IMAGE_TAG }} ./etl-job
+        
+        # Add 'latest' tag to 'main' image
+        if [[ $IMAGE_TAG == 'main' ]]; then
+          docker image tag $REPO:main $REPO:latest
+        fi
+
+        # Push the tagged image to Quay.io
+        docker push --all-tags $REPO
