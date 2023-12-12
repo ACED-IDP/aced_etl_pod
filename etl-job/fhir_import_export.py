@@ -182,7 +182,7 @@ def _load_all(study, project_id, output) -> bool:
         output['logs'].append("Please provide a project_id (program-project)")
         return False
 
-    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced.json'
+    schema = os.environ['DICTIONARY_URL']
 
     logs = None
 
