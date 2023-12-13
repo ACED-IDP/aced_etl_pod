@@ -4,8 +4,9 @@ import pathlib
 import sys
 import json
 import subprocess
-import click
 import yaml
+import shutil
+import pathlib
 
 from gen3.auth import Gen3Auth
 
@@ -17,9 +18,8 @@ from gen3.file import Gen3File
 from gen3_util.config import Config
 from gen3_util.meta.uploader import cp
 
-from pathlib import Path
-
 from iceberg_tools.data.simplifier import simplify_directory
+from iceberg_tools.cli.data import validate_simplified, validate
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
@@ -182,22 +182,32 @@ def _load_all(study, project_id, output) -> bool:
         output['logs'].append("Please provide a project_id (program-project)")
         return False
 
-    schema = os.environ['DICTIONARY_URL']
-
     logs = None
+    schema = os.environ['DICTIONARY_URL']
+    output['logs'].append(f"Schema {schema} configured")
 
     try:
         program, project = project_id.split('-')
         assert program, output['logs'].append("program is required")
         assert project, output['logs'].append("project is required")
 
-        research_study = f'studies/{study}/extractions/ResearchStudy.ndjson'
-        if not os.path.isfile(research_study):
-            output['logs'].append("Study not Simplified. Simplifying Study...")
+        if validate(f'studies/{study}', "**/*.*"):
+            output['logs'].append("Valid FHIR detected. Study not Simplified. Simplifying Study...")
             simplify_directory(f'studies/{study}', pattern="**/*.*",
                                output_path=f'studies/{study}/extractions',
                                schema_path=schema, dialect='PFB',
                                config_path='config.yaml')
+
+        elif validate_simplified(f'studies/{study}', schema):
+            output['logs'].append(f"studies/{study} already simplified. Skipping Simplifiy step")
+            # files unzipped in study directory but since they have already been simplified they need to be moved to the extractions directory
+            os.makedirs(f"studies/{project}/extractions", exist_ok=True)
+            for file_name in [file for file in os.listdir(f"studies/{project}") if (file.endswith(".ndjson") or file.endswith(".json"))]: 
+                shutil.move(f"studies/{project}/{file_name}", f"studies/{project}/extractions")
+
+        else:
+            output['logs'].append(f"Source Data at studies/{study}/extractions is neither valid FHIR or valid simplified FHIR, exiting")
+            return False
 
         meta_upload(source_path=f'studies/{study}/extractions/',
                     program=program, project=project,
