@@ -12,6 +12,7 @@ from gen3.auth import Gen3Auth
 from aced_submission.fhir_store import fhir_get, fhir_put
 from aced_submission.meta_graph_load import meta_upload
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
+from gen3.file import Gen3File
 
 from gen3_util.config import Config
 from gen3_util.meta.uploader import cp
@@ -78,8 +79,6 @@ def _can_create(output, program, user) -> bool:
         can_create = False
 
     required_resources = [
-        '/services/sheepdog/submission/program',
-        '/services/sheepdog/submission/project',
         f"/programs/{program}/projects"
     ]
     for required_resource in required_resources:
@@ -96,12 +95,6 @@ def _can_create(output, program, user) -> bool:
         if required_service not in user['authz']:
             output['logs'].append(f"{required_service} not found in user authz")
             can_create = False
-        else:
-            if {'method': '*', 'service': 'sheepdog'} not in user['authz'][required_service]:
-                output['logs'].append(f"sheepdog not found in user authz for {required_service}")
-                can_create = False
-            else:
-                output['logs'].append(f"HAS SERVICE sheepdog on resource {required_service}")
 
     return can_create
 
@@ -150,15 +143,16 @@ def _can_read(output, program, project, user) -> bool:
 
 def _download_and_unzip(object_id, file_path, output) -> bool:
     """Download and unzip object_id to file_path"""
-    cmd = f"gen3_util files cp {object_id} /tmp/{object_id}".split()
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        output['logs'].append(f"ERROR DOWNLOADING {object_id} /tmp/{object_id}")
-        if result.stderr:
-            output['logs'].append(result.stderr.read().decode())
-        if result.stdout:
-            output['logs'].append(result.stdout.read().decode())
+    try:
+        token = _get_token()
+        auth = _auth(token)
+        file_client = Gen3File(auth)
+        file_client.download_single(object_id, f"/tmp/{object_id}")
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred: {str(e)}")
+        output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
         return False
+
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
     cmd = f"unzip -o -j /tmp/{object_id}/*.zip -d {file_path}".split()
     result = subprocess.run(cmd)
@@ -188,7 +182,7 @@ def _load_all(study, project_id, output) -> bool:
         output['logs'].append("Please provide a project_id (program-project)")
         return False
 
-    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
+    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced.json'
 
     logs = None
 
@@ -295,7 +289,9 @@ def main():
     # print("[out] retrieving user info...")
     user = _user(auth)
 
-    output = {'user': user, 'files': [], 'logs': []}
+    output = {'user': None, 'files': [], 'logs': []}
+    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
+    print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
     # output['env'] = {k: v for k, v in os.environ.items()}
 

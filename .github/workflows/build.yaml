@@ -1,15 +1,11 @@
 # Workflow for building the ACED ETL image and pushing it to the quay.io repository
-
+#
 # Optionally debug via SSH
 # Ref: https://fleetdm.com/engineering/tips-for-github-actions-usability
 #
 # To use this step uncomment and place anywhere in the build steps. The build will pause on this step and
 # output a ssh address associated with the Github action worker. Helpful for debugging build steps and
 # and intermediary files/artifacts.
-
-# Example:
-#   Web shell: https://tmate.io/t/q8FU3U9SvmMVxAhMHRyExNhr8
-#   SSH: ssh q8FU3U9SvmMVxAhMHRyExNhr8@sfo2.tmate.io
 #
 # - name: Setup tmate session
 #   uses: mxschmitt/action-tmate@v3
@@ -18,8 +14,6 @@ name: Build and publish ACED ETL image
 
 on:
   push:
-    tags:
-      - v**
   workflow_dispatch:
 
 jobs:
@@ -36,8 +30,21 @@ jobs:
         username: ${{ secrets.QUAY_USERNAME }}
         password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 
-    - name: Build
+    - name: Build and push image
       run: |
+        # Set Image tag to the branch name
+        BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
+        REPO=quay.io/ohsu-comp-bio/aced-etl
+        echo "Setting image tag to $REPO:$BRANCH"
+
+        # Login to Quay.io and build image
         docker login quay.io
-        docker build -t quay.io/ohsu-comp-bio/aced-etl ./etl-job
-        docker push quay.io/ohsu-comp-bio/aced-etl
+        docker build -t $REPO:$BRANCH ./etl-job
+        
+        # Add 'latest' tag to 'main' image
+        if [[ $BRANCH == 'main' ]]; then
+          docker image tag $REPO:main $REPO:latest
+        fi
+
+        # Push the tagged image to Quay.io
+        docker push --all-tags $REPO

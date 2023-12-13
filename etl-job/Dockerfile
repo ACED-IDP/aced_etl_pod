@@ -45,8 +45,8 @@ RUN source venv/bin/activate && pip install -r requirements.txt
 
 # move these out of requirements.txt, so that builds are quicker when we change
 RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.5"
-RUN source venv/bin/activate && pip install "gen3_util>=0.0.7"
-RUN source venv/bin/activate && pip install "aced-submission==0.0.8rc2" --no-cache
+RUN source venv/bin/activate && pip install "gen3_util>=0.0.9"
+RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc2" --no-cache
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
