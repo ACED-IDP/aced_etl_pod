@@ -1,5 +1,5 @@
 # set base image (host OS)
-FROM python:3.9.16-slim-buster
+FROM python:3.12.1-slim-bullseye
 
 # install dependencies
 RUN apt-get -y update
