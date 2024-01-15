@@ -291,11 +291,13 @@ def main():
 
     output = {'user': None, 'files': [], 'logs': []}
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    print(f"[out] {json.dumps(user, separators=(',', ':'))}")
+    # print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
     # output['env'] = {k: v for k, v in os.environ.items()}
 
     input_data = _input_data()
+    print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
+
     program, project = _get_program_project(input_data)
 
     method = input_data.get("method", None)
