@@ -6,6 +6,7 @@ import json
 import subprocess
 import click
 import yaml
+import shutil
 
 from gen3.auth import Gen3Auth
 
