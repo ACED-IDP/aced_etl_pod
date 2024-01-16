@@ -347,6 +347,7 @@ def _put(input_data, output, program, project, user):
             # load the study into the database and elastic search
             _load_all(project, f"{program}-{project}", output)
 
+        shutil.rmtree(file_path)
 
 if __name__ == '__main__':
     main()
