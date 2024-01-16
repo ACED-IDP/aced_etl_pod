@@ -141,20 +141,25 @@ def _can_read(output, program, project, user) -> bool:
     return can_read
 
 
-def _download_and_unzip(object_id, file_path, output) -> bool:
-    """Download and unzip object_id to file_path"""
+def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
+    """Download and unzip object_id to downloads/{file_path}"""
     try:
         token = _get_token()
         auth = _auth(token)
         file_client = Gen3File(auth)
-        file_client.download_single(object_id, f"/tmp/{object_id}")
+        full_download_path = (pathlib.Path('downloads') / file_name)
+        full_download_path_parent = full_download_path.parent
+        full_download_path_parent.mkdir(parents=True, exist_ok=True)
+        file_client.download_single(object_id, 'downloads' )
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
+        raise e
         return False
 
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
-    cmd = f"unzip -o -j /tmp/{object_id}/*.zip -d {file_path}".split()
+
+    cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
     result = subprocess.run(cmd)
     if result.returncode != 0:
         output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
@@ -321,22 +326,26 @@ def _put(input_data, output, program, project, user):
     # check permissions
     can_create = _can_create(output, program, user)
     output['logs'].append(f"CAN CREATE: {can_create}")
-    file_path = f"/root/studies/{project}/"
-    if can_create:
-        object_id = _get_object_id(input_data)
-        if object_id:
-            # get the meta data file
-            if _download_and_unzip(object_id, file_path, output):
+    assert can_create, f"No create permissions on {program}"
+    assert 'push' in input_data, "input data must contain a `push`"
+    for commit in input_data['push']['commits']:
+        assert 'object_id' in commit, "commit must contain an `object_id`"
+        object_id = commit['object_id']
+        assert object_id, "object_id must not be empty"
+        assert 'commit_id' in commit, "commit must contain a `commit_id`"
+        commit_id = commit['commit_id']
+        assert commit_id, "commit_id must not be empty"
+        file_path = f"/root/studies/{project}/commits/{commit_id}"
+        pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
+        # get the meta data file
+        if _download_and_unzip(object_id, file_path, output, commit['meta_path']):
 
-                # tell user what files were found
-                for _ in pathlib.Path(file_path).glob('*'):
-                    output['files'].append(str(_))
+            # tell user what files were found
+            for _ in pathlib.Path(file_path).glob('*'):
+                output['files'].append(str(_))
 
-                # load the study into the database and elastic search
-                _load_all(project, f"{program}-{project}", output)
-
-        else:
-            output['logs'].append("OBJECT ID NOT FOUND")
+            # load the study into the database and elastic search
+            _load_all(project, f"{program}-{project}", output)
 
 
 if __name__ == '__main__':
