@@ -176,7 +176,7 @@ def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
     return True
 
 
-def _load_all(study, project_id, output) -> bool:
+def _load_all(study, project_id, output, file_path) -> bool:
     config = "/root/config.yaml"
     if not os.path.isfile(config):
         output['logs'].append("config file does not exist")
@@ -199,20 +199,27 @@ def _load_all(study, project_id, output) -> bool:
         assert program, output['logs'].append("program is required")
         assert project, output['logs'].append("project is required")
 
-        research_study = f'studies/{study}/extractions/ResearchStudy.ndjson'
+        file_path = pathlib.Path(file_path)
+        extraction_path = file_path / 'extractions'
+        research_study = str(extraction_path / 'ResearchStudy.ndjson')
+        patient_path = str(extraction_path / 'Patient.ndjson')
+        observation_path = str(extraction_path / 'Observation.ndjson')
+        document_reference_path = str(extraction_path / 'DocumentReference.ndjson')
+
+        file_path = str(file_path)
+        extraction_path = str(extraction_path)
+
         if not os.path.isfile(research_study):
             output['logs'].append("Study not Simplified. Simplifying Study...")
-            simplify_directory(f'studies/{study}', pattern="**/*.*",
-                               output_path=f'studies/{study}/extractions',
+            simplify_directory(file_path, pattern="**/*.*",
+                               output_path=extraction_path,
                                schema_path=schema, dialect='PFB',
                                config_path='config.yaml')
 
-        meta_upload(source_path=f'studies/{study}/extractions/',
+        meta_upload(source_path=extraction_path,
                     program=program, project=project,
-                    credentials_file="/root/.gen3/credentials.json",
+                    credentials_file="/root/.gen3/credentials.json",  # TODO - is this used?
                     silent=False, dictionary_path=schema, config_path=config)
-
-        patient_path = f'studies/{study}/extractions/Patient.ndjson'
 
         if os.path.isfile(patient_path):
             denormalize_patient(patient_path)
@@ -226,7 +233,6 @@ def _load_all(study, project_id, output) -> bool:
                       elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        observation_path = f'studies/{study}/extractions/Observation.ndjson'
         if os.path.isfile(observation_path):
             load_flat(project_id=project_id, index="observation",
                       path=observation_path, limit=None,
@@ -238,9 +244,8 @@ def _load_all(study, project_id, output) -> bool:
                       elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        file_path = f'studies/{study}/extractions/DocumentReference.ndjson'
         if os.path.isfile(file_path):
-            load_flat(project_id=project_id, index="file", path=file_path,
+            load_flat(project_id=project_id, index="file", path=document_reference_path,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
         else:
@@ -248,7 +253,7 @@ def _load_all(study, project_id, output) -> bool:
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        logs = fhir_put(project_id, path=f'studies/{study}',
+        logs = fhir_put(project_id, path=file_path,
                         elastic_url=DEFAULT_ELASTIC)
         yaml.dump(logs, sys.stdout, default_flow_style=False)
 
@@ -361,7 +366,7 @@ def _put(input_data, output, program, project, user):
                 output['files'].append(str(_))
 
             # load the study into the database and elastic search
-            _load_all(project, f"{program}-{project}", output)
+            _load_all(project, f"{program}-{project}", output, file_path)
 
         shutil.rmtree(f"/root/studies/{project}")
 
