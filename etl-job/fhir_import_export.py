@@ -4,6 +4,8 @@ import pathlib
 import sys
 import json
 import subprocess
+from datetime import datetime
+
 import click
 import yaml
 import shutil
@@ -277,9 +279,19 @@ def _get(input_data, output, program, project, user) -> str:
     output['logs'].extend(logs)
 
     # zip and upload the exported files to bucket
+    now = datetime.now().strftime("%Y%m%d-%H%M%S")
+    object_name = f'{project_id}_{now}_SNAPSHOT.zip'
+
     config = Config()
-    cp_result = cp(config=config, from_=study_path,
-                   project_id=project_id, ignore_state=False)
+    cp_result = cp(
+        config=config,
+        from_=study_path,
+        project_id=project_id,
+        metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
+        user=user,
+        object_name=object_name,
+        ignore_state=False)
+
     output['logs'].append(cp_result['msg'])
     object_id = cp_result['object_id']
 
@@ -311,6 +323,9 @@ def main():
     if method.lower() == 'put':
         # read from bucket, write to fhir store
         _put(input_data, output, program, project, user)
+        # after pushing commits, create a snapshot file
+        object_id = _get(input_data, output, program, project, user)
+        output['snapshot'] = {'object_id': object_id}
     elif method.lower() == 'get':
         # read fhir store, write to bucket
         object_id = _get(input_data, output, program, project, user)
@@ -349,6 +364,7 @@ def _put(input_data, output, program, project, user):
             _load_all(project, f"{program}-{project}", output)
 
         shutil.rmtree(f"/root/studies/{project}")
+
 
 if __name__ == '__main__':
     main()
