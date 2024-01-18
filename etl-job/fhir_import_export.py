@@ -10,6 +10,7 @@ import click
 import yaml
 import shutil
 
+from elasticsearch import Elasticsearch
 from gen3.auth import Gen3Auth
 
 from aced_submission.fhir_store import fhir_get, fhir_put
@@ -279,6 +280,10 @@ def _get(input_data, output, program, project, user) -> str:
 
     study_path = f"studies/{project}"
     project_id = f"{program}-{project}"
+
+    # ensure we wait for the index to be refreshed before we query it
+    elastic = Elasticsearch([DEFAULT_ELASTIC], request_timeout=120)
+    elastic.refresh(index='fhir')
 
     logs = fhir_get(f"{program}-{project}", study_path, DEFAULT_ELASTIC)
     output['logs'].extend(logs)
