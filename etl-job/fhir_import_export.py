@@ -283,7 +283,7 @@ def _get(input_data, output, program, project, user) -> str:
 
     # ensure we wait for the index to be refreshed before we query it
     elastic = Elasticsearch([DEFAULT_ELASTIC], request_timeout=120)
-    elastic.refresh(index='fhir')
+    elastic.indices.refresh(index='fhir')
 
     logs = fhir_get(f"{program}-{project}", study_path, DEFAULT_ELASTIC)
     output['logs'].extend(logs)
