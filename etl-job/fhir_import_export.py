@@ -245,7 +245,7 @@ def _load_all(study, project_id, output, file_path) -> bool:
                       elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        if os.path.isfile(file_path):
+        if os.path.isfile(document_reference_path):
             load_flat(project_id=project_id, index="file", path=document_reference_path,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
