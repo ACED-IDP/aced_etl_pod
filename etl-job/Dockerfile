@@ -41,13 +41,18 @@ ENV PYTHONUNBUFFERED=1
 COPY ./requirements.txt /root
 RUN source venv/bin/activate && pip install -r requirements.txt
 
-# move these out of requirements.txt, so that builds are quicker when we change
-#RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.6rc1"
-RUN git clone https://github.com/bmeg/iceberg-schema-tools.git && cd iceberg-schema-tools && git checkout grip-etl-addon
-RUN source venv/bin/activate && cd iceberg-schema-tools && pip install -e .
-
 RUN source venv/bin/activate && pip install "gen3_util>=0.0.14rc3"
-##RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc9"
+RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc9"
+
+# move these out of requirements.txt, so that builds are quicker when we change
+# Comment out this iceberg tools until a new one gets released with the merge
+# RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.6rc1"
+RUN source venv/bin/activate && \
+    git clone https://github.com/bmeg/iceberg-schema-tools.git && \
+    cd iceberg-schema-tools && \
+    git checkout grip-etl-addon && \
+    pip install -e .
+
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh

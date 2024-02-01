@@ -11,12 +11,12 @@ import click
 import yaml
 import shutil
 
-#from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch
 from gen3.auth import Gen3Auth
 
-#from aced_submission.fhir_store import fhir_get, fhir_put
-#from aced_submission.meta_graph_load import meta_upload
-#from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
+from aced_submission.fhir_store import fhir_get, fhir_put
+from aced_submission.meta_graph_load import meta_upload
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
 from gen3.file import Gen3File
 
 from gen3_util.config import Config
@@ -31,13 +31,13 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 def _get_token() -> str:
     """Get ACCESS_TOKEN from environment"""
-    # print("[out] retrieving access token...")
+    print("[out] retrieving access token...")
     return os.environ.get('ACCESS_TOKEN', None)
 
 
 def _auth(access_token: str) -> Gen3Auth:
     """Authenticate using ACCESS_TOKEN"""
-    # print("[out] authorizing...")
+    print("[out] authorizing...")
     if access_token:
         # use access token from environment (set by sower)
         return Gen3Auth(refresh_file=f"accesstoken:///{access_token}")
@@ -66,7 +66,6 @@ def _get_program_project(input_data) -> tuple:
 def _get_object_id(input_data) -> str:
     """Get object_id from input_data"""
     return input_data.get('object_id', None)
-
 
 def _can_create(output, program, user) -> bool:
     """Check if user can create a project in the given program.
@@ -165,6 +164,9 @@ def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
 
     cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
+    assert os.path.isfile(full_download_path), output['logs'].append(f"file: {full_download_path} does not exist")
+    output['logs'].append(f"COMMAND:  {cmd}")
+
     result = subprocess.run(cmd)
     if result.returncode != 0:
         output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
@@ -178,20 +180,20 @@ def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
     return True
 
 
-def load_grip(graph_name, directory_path):
+def load_grip(graph_name, directory_path, output) -> bool:
     # List graphs and check to see if graph name is amoung the graphs listed
     response = requests.get("http://local-grip:8201/api/writer/list-graphs")
     response.raise_for_status()
     response_json = response.json()
     assert graph_name in response_json["data"]["graphs"], "ERROR, graph not found in GRIP"
 
-    print(f"loading files into {graph_name} from {directory_path}")
+    output["logs"].append(f"loading files into {graph_name} from {directory_path}")
     assert os.path.isdir(directory_path), f"directory path {directory_path} is not a directory"
     for file in [f for f in os.listdir(directory_path) if f.endswith(".ndjson")]:
         try:
             file_path = f"{directory_path}/{file}"
+            output["logs"].append(f"loading file: {file_path}")
             graph_component = "vertex"
-            print("FILE PATH: ", file_path)
             if "edge" in file_path:
                 graph_component = "edge"
             with open(file_path, 'rb') as file:
@@ -204,12 +206,16 @@ def load_grip(graph_name, directory_path):
 
             response.raise_for_status()
             json_data = response.json()
-            print("Response JSON:", json_data)
+
 
         except requests.exceptions.HTTPError as http_err:
-            print(f"HTTP error occurred: {http_err}")
+            output["logs"].append(f"HTTP error occurred: {http_err}")
+            return False
         except Exception as err:
-            print(f"An error occurred: {err}")
+            output["logs"].append(f"An error occurred: {err}")
+            return False
+
+    return True
 
 
 def _load_all(study, project_id, output, file_path, dialect) -> bool:
@@ -248,7 +254,6 @@ def _load_all(study, project_id, output, file_path, dialect) -> bool:
         extraction_path = str(extraction_path)
 
         if not os.path.isfile(research_study):
-            print("FILE PATH: ", file_path)
             output['logs'].append("Study not Simplified. Simplifying Study...")
             simplify_directory(file_path,
                                pattern="**/*.*",
@@ -259,12 +264,13 @@ def _load_all(study, project_id, output, file_path, dialect) -> bool:
                                project_id=project_id)
 
         if dialect == "GRIP":
-            load_grip(graph_name="synthea", directory_path=extraction_path)
+            load_grip(graph_name="synthea", directory_path=extraction_path, output=output)
             output['logs'].append(f"LOADED {study}")
             yaml.dump(logs, sys.stdout, default_flow_style=False)
             if logs is not None:
                 output['logs'].extend(logs)
             return True
+
 
         elif dialect == "PFB":
             meta_upload(source_path=extraction_path,
@@ -375,21 +381,17 @@ def main():
     print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
     program, project = _get_program_project(input_data)
 
-    can_create = _can_create(output, program, user)
-    print("CAN CREATE: ", can_create)
 
     dialect = input_data.get("dialect", None)
-    print("DIALECT", dialect)
     method = input_data.get("method", None)
     assert method, "input data must contain a `method`"
     if method.lower() == 'put':
         # read from bucket, write to fhir store
         _put(input_data, output, program, project, user, dialect)
         # after pushing commits, create a snapshot file
-
-        # comment this out for now
-        # object_id = _get(input_data, output, program, project, user)
-        # output['snapshot'] = {'object_id': object_id}
+        if dialect != "GRIP":
+            object_id = _get(input_data, output, program, project, user)
+            output['snapshot'] = {'object_id': object_id}
     elif method.lower() == 'get':
         # read fhir store, write to bucket
         object_id = _get(input_data, output, program, project, user)
@@ -407,8 +409,7 @@ def _put(input_data, output, program, project, user, dialect):
     can_create = _can_create(output, program, user)
     output['logs'].append(f"CAN CREATE: {can_create}")
     assert can_create, f"No create permissions on {program}"
-    print("INPUT DATA: ", input_data)
-    output["logs"].append(f"INPUT DATA:  {input_data}")
+    output['logs'].append(f"INPUT DATA:  {input_data}")
 
     assert 'push' in input_data, "input data must contain a `push`"
     for commit in input_data['push']['commits']:
