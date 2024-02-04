@@ -4,9 +4,13 @@ import pathlib
 import sys
 import json
 import subprocess
+from datetime import datetime
+
 import click
 import yaml
+import shutil
 
+from elasticsearch import Elasticsearch
 from gen3.auth import Gen3Auth
 
 from aced_submission.fhir_store import fhir_get, fhir_put
@@ -141,20 +145,25 @@ def _can_read(output, program, project, user) -> bool:
     return can_read
 
 
-def _download_and_unzip(object_id, file_path, output) -> bool:
-    """Download and unzip object_id to file_path"""
+def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
+    """Download and unzip object_id to downloads/{file_path}"""
     try:
         token = _get_token()
         auth = _auth(token)
         file_client = Gen3File(auth)
-        file_client.download_single(object_id, f"/tmp/{object_id}")
+        full_download_path = (pathlib.Path('downloads') / file_name)
+        full_download_path_parent = full_download_path.parent
+        full_download_path_parent.mkdir(parents=True, exist_ok=True)
+        file_client.download_single(object_id, 'downloads' )
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
+        raise e
         return False
 
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
-    cmd = f"unzip -o -j /tmp/{object_id}/*.zip -d {file_path}".split()
+
+    cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
     result = subprocess.run(cmd)
     if result.returncode != 0:
         output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
@@ -168,7 +177,7 @@ def _download_and_unzip(object_id, file_path, output) -> bool:
     return True
 
 
-def _load_all(study, project_id, output) -> bool:
+def _load_all(study, project_id, output, file_path) -> bool:
     config = "/root/config.yaml"
     if not os.path.isfile(config):
         output['logs'].append("config file does not exist")
@@ -191,20 +200,27 @@ def _load_all(study, project_id, output) -> bool:
         assert program, output['logs'].append("program is required")
         assert project, output['logs'].append("project is required")
 
-        research_study = f'studies/{study}/extractions/ResearchStudy.ndjson'
+        file_path = pathlib.Path(file_path)
+        extraction_path = file_path / 'extractions'
+        research_study = str(extraction_path / 'ResearchStudy.ndjson')
+        patient_path = str(extraction_path / 'Patient.ndjson')
+        observation_path = str(extraction_path / 'Observation.ndjson')
+        document_reference_path = str(extraction_path / 'DocumentReference.ndjson')
+
+        file_path = str(file_path)
+        extraction_path = str(extraction_path)
+
         if not os.path.isfile(research_study):
             output['logs'].append("Study not Simplified. Simplifying Study...")
-            simplify_directory(f'studies/{study}', pattern="**/*.*",
-                               output_path=f'studies/{study}/extractions',
+            simplify_directory(file_path, pattern="**/*.*",
+                               output_path=extraction_path,
                                schema_path=schema, dialect='PFB',
                                config_path='config.yaml')
 
-        meta_upload(source_path=f'studies/{study}/extractions/',
+        meta_upload(source_path=extraction_path,
                     program=program, project=project,
-                    credentials_file="/root/.gen3/credentials.json",
+                    credentials_file="/root/.gen3/credentials.json",  # TODO - is this used?
                     silent=False, dictionary_path=schema, config_path=config)
-
-        patient_path = f'studies/{study}/extractions/Patient.ndjson'
 
         if os.path.isfile(patient_path):
             denormalize_patient(patient_path)
@@ -218,7 +234,6 @@ def _load_all(study, project_id, output) -> bool:
                       elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        observation_path = f'studies/{study}/extractions/Observation.ndjson'
         if os.path.isfile(observation_path):
             load_flat(project_id=project_id, index="observation",
                       path=observation_path, limit=None,
@@ -230,9 +245,8 @@ def _load_all(study, project_id, output) -> bool:
                       elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        file_path = f'studies/{study}/extractions/DocumentReference.ndjson'
-        if os.path.isfile(file_path):
-            load_flat(project_id=project_id, index="file", path=file_path,
+        if os.path.isfile(document_reference_path):
+            load_flat(project_id=project_id, index="file", path=document_reference_path,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
         else:
@@ -240,7 +254,7 @@ def _load_all(study, project_id, output) -> bool:
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        logs = fhir_put(project_id, path=f'studies/{study}',
+        logs = fhir_put(project_id, path=file_path,
                         elastic_url=DEFAULT_ELASTIC)
         yaml.dump(logs, sys.stdout, default_flow_style=False)
 
@@ -267,13 +281,27 @@ def _get(input_data, output, program, project, user) -> str:
     study_path = f"studies/{project}"
     project_id = f"{program}-{project}"
 
+    # ensure we wait for the index to be refreshed before we query it
+    elastic = Elasticsearch([DEFAULT_ELASTIC], request_timeout=120)
+    elastic.indices.refresh(index='fhir')
+
     logs = fhir_get(f"{program}-{project}", study_path, DEFAULT_ELASTIC)
     output['logs'].extend(logs)
 
     # zip and upload the exported files to bucket
+    now = datetime.now().strftime("%Y%m%d-%H%M%S")
+    object_name = f'{project_id}_{now}_SNAPSHOT.zip'
+
     config = Config()
-    cp_result = cp(config=config, from_=study_path,
-                   project_id=project_id, ignore_state=False)
+    cp_result = cp(
+        config=config,
+        from_=study_path,
+        project_id=project_id,
+        metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
+        user=user,
+        object_name=object_name,
+        ignore_state=False)
+
     output['logs'].append(cp_result['msg'])
     object_id = cp_result['object_id']
 
@@ -291,11 +319,13 @@ def main():
 
     output = {'user': None, 'files': [], 'logs': []}
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    print(f"[out] {json.dumps(user, separators=(',', ':'))}")
+    # print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
     # output['env'] = {k: v for k, v in os.environ.items()}
 
     input_data = _input_data()
+    print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
+
     program, project = _get_program_project(input_data)
 
     method = input_data.get("method", None)
@@ -303,6 +333,9 @@ def main():
     if method.lower() == 'put':
         # read from bucket, write to fhir store
         _put(input_data, output, program, project, user)
+        # after pushing commits, create a snapshot file
+        object_id = _get(input_data, output, program, project, user)
+        output['snapshot'] = {'object_id': object_id}
     elif method.lower() == 'get':
         # read fhir store, write to bucket
         object_id = _get(input_data, output, program, project, user)
@@ -319,22 +352,28 @@ def _put(input_data, output, program, project, user):
     # check permissions
     can_create = _can_create(output, program, user)
     output['logs'].append(f"CAN CREATE: {can_create}")
-    file_path = f"/root/studies/{project}/"
-    if can_create:
-        object_id = _get_object_id(input_data)
-        if object_id:
-            # get the meta data file
-            if _download_and_unzip(object_id, file_path, output):
+    assert can_create, f"No create permissions on {program}"
+    assert 'push' in input_data, "input data must contain a `push`"
+    for commit in input_data['push']['commits']:
+        assert 'object_id' in commit, "commit must contain an `object_id`"
+        object_id = commit['object_id']
+        assert object_id, "object_id must not be empty"
+        assert 'commit_id' in commit, "commit must contain a `commit_id`"
+        commit_id = commit['commit_id']
+        assert commit_id, "commit_id must not be empty"
+        file_path = f"/root/studies/{project}/commits/{commit_id}"
+        pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
+        # get the meta data file
+        if _download_and_unzip(object_id, file_path, output, commit['meta_path']):
 
-                # tell user what files were found
-                for _ in pathlib.Path(file_path).glob('*'):
-                    output['files'].append(str(_))
+            # tell user what files were found
+            for _ in pathlib.Path(file_path).glob('*'):
+                output['files'].append(str(_))
 
-                # load the study into the database and elastic search
-                _load_all(project, f"{program}-{project}", output)
+            # load the study into the database and elastic search
+            _load_all(project, f"{program}-{project}", output, file_path)
 
-        else:
-            output['logs'].append("OBJECT ID NOT FOUND")
+        shutil.rmtree(f"/root/studies/{project}")
 
 
 if __name__ == '__main__':

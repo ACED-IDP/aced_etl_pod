@@ -1,5 +1,5 @@
 # set base image (host OS)
-FROM python:3.9.16-slim-buster
+FROM python:3.12-bookworm
 
 # install dependencies
 RUN apt-get -y update
@@ -45,8 +45,8 @@ RUN source venv/bin/activate && pip install -r requirements.txt
 
 # move these out of requirements.txt, so that builds are quicker when we change
 RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.6rc1"
-RUN source venv/bin/activate && pip install "gen3_util>=0.0.13rc5"
-RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc8" --no-cache
+RUN source venv/bin/activate && pip install "gen3_util>=0.0.14rc3"
+RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc9" --no-cache
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
