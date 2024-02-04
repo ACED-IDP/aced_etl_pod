@@ -1,29 +1,23 @@
-import os
-import logging
-import pathlib
-import sys
 import json
-import subprocess
-from datetime import datetime
-import traceback
-
-import click
-import yaml
+import logging
+import os
+import pathlib
 import shutil
+import subprocess
+import sys
+import traceback
+from datetime import datetime
 
+import yaml
+from aced_submission.fhir_store import fhir_get, fhir_put
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
+from aced_submission.meta_flat_load import delete as meta_flat_delete
+from aced_submission.meta_graph_load import meta_upload, empty_project
 from elasticsearch import Elasticsearch
 from gen3.auth import Gen3Auth
-
-from aced_submission.fhir_store import fhir_get, fhir_put
-from aced_submission.meta_graph_load import meta_upload
-from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
 from gen3.file import Gen3File
-
 from gen3_util.config import Config
 from gen3_util.meta.uploader import cp
-
-from pathlib import Path
-
 from iceberg_tools.data.simplifier import simplify_directory
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
@@ -310,6 +304,19 @@ def _get(input_data, output, program, project, user) -> str:
     return object_id
 
 
+def _empty_project(input_data, output, program, project, user, dictionary_path=None, config_path=None):
+    """Clear out graph and flat meta data for project """
+    # check permissions
+    can_create = _can_create(output, program, user)
+    output['logs'].append(f"CAN CREATE: {can_create}")
+    assert can_create, f"No create permissions on {program}"
+
+    empty_project(program=program, project=project, dictionary_path=dictionary_path, config_path=config_path)
+
+    for index in ["patient", "observation", "file"]:
+        meta_flat_delete(project_id=f"{program}-{project}", index=index)
+
+
 def main():
     token = _get_token()
     auth = _auth(token)
@@ -319,7 +326,7 @@ def main():
     # print("[out] retrieving user info...")
     user = _user(auth)
 
-    output = {'user': None, 'files': [], 'logs': []}
+    output = {'user': user['email'], 'files': [], 'logs': []}
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
     # print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
@@ -329,6 +336,7 @@ def main():
     print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
 
     program, project = _get_program_project(input_data)
+    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced.json'
 
     method = input_data.get("method", None)
     assert method, "input data must contain a `method`"
@@ -342,6 +350,9 @@ def main():
         # read fhir store, write to bucket
         object_id = _get(input_data, output, program, project, user)
         output['object_id'] = object_id
+    elif method.lower() == 'delete':
+        _empty_project(input_data, output, program, project, user, dictionary_path=schema,
+                       config_path="config.yaml")
     else:
         raise Exception(f"unknown method {method}")
 
