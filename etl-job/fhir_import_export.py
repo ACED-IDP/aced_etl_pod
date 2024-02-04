@@ -5,6 +5,7 @@ import sys
 import json
 import subprocess
 from datetime import datetime
+import traceback
 
 import click
 import yaml
@@ -260,9 +261,10 @@ def _load_all(study, project_id, output, file_path) -> bool:
 
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
-        output['logs'].append(f"LOADED {study}")
+        tb = traceback.format_exc()
         if logs is not None:
             output['logs'].extend(logs)
+            output['logs'].append(tb)
         return False
 
     output['logs'].append(f"LOADED {study}")
