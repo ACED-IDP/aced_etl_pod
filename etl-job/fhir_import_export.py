@@ -307,15 +307,20 @@ def _get(input_data, output, program, project, user) -> str:
 def _empty_project(input_data, output, program, project, user, dictionary_path=None, config_path=None):
     """Clear out graph and flat metadata for project """
     # check permissions
-    can_create = _can_create(output, program, user)
-    assert can_create, f"No delete permissions on {program}"
+    try:
+        can_create = _can_create(output, program, user)
+        assert can_create, f"No delete permissions on {program}"
 
-    empty_project(program=program, project=project, dictionary_path=dictionary_path, config_path=config_path)
-    output['logs'].append(f"EMPTIED graph for {program}-{project}")
+        empty_project(program=program, project=project, dictionary_path=dictionary_path, config_path=config_path)
+        output['logs'].append(f"EMPTIED graph for {program}-{project}")
 
-    for index in ["patient", "observation", "file"]:
-        meta_flat_delete(project_id=f"{program}-{project}", index=index)
-    output['logs'].append(f"EMPTIED flat for {program}-{project}")
+        for index in ["patient", "observation", "file"]:
+            meta_flat_delete(project_id=f"{program}-{project}", index=index)
+        output['logs'].append(f"EMPTIED flat for {program}-{project}")
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
+        tb = traceback.format_exc()
+        output['logs'].append(tb)
 
 
 def main():
