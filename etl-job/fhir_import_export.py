@@ -186,7 +186,10 @@ def _load_all(study, project_id, output, file_path) -> bool:
         output['logs'].append("Please provide a project_id (program-project)")
         return False
 
-    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced.json'
+    schema = os.getenv('DICTIONARY_URL', None)
+    if schema is None:
+        schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
+        output['logs'].append(f"DICTIONARY_URL not found in environment using {schema}")
 
     logs = None
 
