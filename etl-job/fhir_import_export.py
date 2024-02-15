@@ -375,6 +375,10 @@ def _empty_project(output: list[str],
         for index in ["patient", "observation", "file"]:
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
         output['logs'].append(f"EMPTIED flat for {program}-{project}")
+
+        fhir_delete(f"{program}-{project}", DEFAULT_ELASTIC)
+        output['logs'].append(f"EMPTIED FHIR STORE for {program}-{project}")
+
     except Exception as e:
         output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
         tb = traceback.format_exc()
@@ -421,7 +425,6 @@ def main():
     elif method.lower() == 'delete':
         _empty_project(output, program, project, user, dictionary_path=schema,
                        config_path="config.yaml")
-        fhir_delete(f"{program}-{project}", DEFAULT_ELASTIC)
 
     else:
         raise Exception(f"unknown method {method}")
