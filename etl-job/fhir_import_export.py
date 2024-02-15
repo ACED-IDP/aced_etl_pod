@@ -9,7 +9,7 @@ import traceback
 from datetime import datetime
 
 import yaml
-from aced_submission.fhir_store import fhir_get, fhir_put
+from aced_submission.fhir_store import fhir_get, fhir_put, fhir_delete
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
 from aced_submission.meta_graph_load import meta_upload, empty_project
@@ -50,34 +50,72 @@ def _input_data() -> dict:
     return json.loads(os.environ['INPUT_DATA'])
 
 
-def _get_program_project(input_data) -> tuple:
+def _get_program_project(input_data: dict) -> tuple:
     """Get program and project from input_data"""
     assert 'project_id' in input_data, "project_id not found in INPUT_DATA"
     assert '-' in input_data['project_id'], 'project_id must be in the format <program>-<project>'
     return input_data['project_id'].split('-')
 
 
-def _get_object_id(input_data) -> str:
-    """Get object_id from input_data"""
-    return input_data.get('object_id', None)
+def _can_delete(output: list[str],
+                program: str,
+                project: str,
+                user: dict) -> bool:
+    """Check if user can delete a project in the given program.
+
+    Args:
+         output: output dict the json that will be returned to the caller
+         program: program Gen3 program(-project)
+         project: project Gen3 (program-)project
+         user: user dict from arborist (aka profile)
+     """
+    can_delete = True
+
+    required_resources = [
+         f"/programs/{program}",
+         f"/programs/{program}/projects"
+     ]
+    for required_resource in required_resources:
+        if required_resource not in user['resources']:
+            output['logs'].append(f"{required_resource} not found in user resources")
+            can_delete = False
+        else:
+            output['logs'].append(f"HAS RESOURCE {required_resource}")
+
+    required_services = [
+         f"/programs/{program}/projects/{project}"
+    ]
+    for required_service in required_services:
+        if required_service not in user['authz']:
+            output['logs'].append(f"{required_service} not found in user authz")
+            can_delete = False
+        else:
+            if {'method': 'delete', 'service': '*'} not in user['authz'][required_service]:
+                output['logs'].append(f"delete not found in user authz for {required_service}")
+                can_delete = False
+            else:
+                output['logs'].append(f"HAS SERVICE delete on resource {required_service}")
+
+    return can_delete
 
 
-def _can_create(output, program, user) -> bool:
+def _can_create(output: list[str],
+                program: str,
+                project: str,
+                user: dict) -> bool:
     """Check if user can create a project in the given program.
 
     Args:
         output: output dict the json that will be returned to the caller
         program: program Gen3 program(-project)
+        project: project Gen3 (program-)project
         user: user dict from arborist (aka profile)
     """
 
     can_create = True
 
-    if f"/programs/{program}" not in user['resources']:
-        output['logs'].append(f"/programs/{program} not found in user resources")
-        can_create = False
-
     required_resources = [
+        f"/programs/{program}",
         f"/programs/{program}/projects"
     ]
     for required_resource in required_resources:
@@ -88,33 +126,40 @@ def _can_create(output, program, user) -> bool:
             output['logs'].append(f"HAS RESOURCE {required_resource}")
 
     required_services = [
-        f"/programs/{program}/projects"
+        f"/programs/{program}/projects/{project}"
     ]
     for required_service in required_services:
         if required_service not in user['authz']:
             output['logs'].append(f"{required_service} not found in user authz")
             can_create = False
+        else:
+            if {'method': 'create', 'service': '*'} not in user['authz'][required_service]:
+                output['logs'].append(f"create not found in user authz for {required_service}")
+                can_create = False
+            else:
+                output['logs'].append(f"HAS SERVICE create on resource {required_service}")
 
     return can_create
 
 
-def _can_read(output, program, project, user) -> bool:
+def _can_read(output: list[str],
+              program: str,
+              project: str,
+              user: dict) -> bool:
     """Check if user can read a project in the given program.
 
     Args:
         output: output dict the json that will be returned to the caller
         program: program Gen3 program(-project)
+        project: project Gen3 (program-)project
         user: user dict from arborist (aka profile)
     """
 
     can_read = True
 
-    if f"/programs/{program}" not in user['resources']:
-        output['logs'].append(f"/programs/{program} not found in user resources")
-        can_read = False
-
     required_resources = [
-        f"/programs/{program}/projects/{project}"
+        f"/programs/{program}",
+        f"/programs/{program}/projects"
     ]
     for required_resource in required_resources:
         if required_resource not in user['resources']:
@@ -140,7 +185,10 @@ def _can_read(output, program, project, user) -> bool:
     return can_read
 
 
-def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
+def _download_and_unzip(object_id: str,
+                        file_path: str,
+                        output: list[str],
+                        file_name: str) -> bool:
     """Download and unzip object_id to downloads/{file_path}"""
     try:
         token = _get_token()
@@ -172,7 +220,11 @@ def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
     return True
 
 
-def _load_all(study, project_id, output, file_path) -> bool:
+def _load_all(study: str,
+              project_id: str,
+              output: list[str],
+              file_path: str,
+              schema: str) -> bool:
     config = "/root/config.yaml"
     if not os.path.isfile(config):
         output['logs'].append("config file does not exist")
@@ -185,11 +237,6 @@ def _load_all(study, project_id, output, file_path) -> bool:
     if project_id is None or project_id == "":
         output['logs'].append("Please provide a project_id (program-project)")
         return False
-
-    schema = os.getenv('DICTIONARY_URL', None)
-    if schema is None:
-        schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
-        output['logs'].append(f"DICTIONARY_URL not found in environment using {schema}")
 
     logs = None
 
@@ -270,7 +317,10 @@ def _load_all(study, project_id, output, file_path) -> bool:
     return True
 
 
-def _get(input_data, output, program, project, user) -> str:
+def _get(output: list[str],
+         program: str,
+         project: str,
+         user: dict) -> str:
     """Export data from the fhir store to bucket, returns object_id."""
     can_read = _can_read(output, program, project, user)
     if not can_read:
@@ -307,12 +357,17 @@ def _get(input_data, output, program, project, user) -> str:
     return object_id
 
 
-def _empty_project(input_data, output, program, project, user, dictionary_path=None, config_path=None):
+def _empty_project(output: list[str],
+                   program: str,
+                   project: str,
+                   user: dict,
+                   dictionary_path: str = None,
+                   config_path: str = None):
     """Clear out graph and flat metadata for project """
     # check permissions
     try:
-        can_create = _can_create(output, program, user)
-        assert can_create, f"No delete permissions on {program}"
+        can_delete = _can_delete(output, program, project, user)
+        assert can_delete, f"No delete permissions on {program}"
 
         empty_project(program=program, project=project, dictionary_path=dictionary_path, config_path=config_path)
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
@@ -345,13 +400,17 @@ def main():
     print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
 
     program, project = _get_program_project(input_data)
-    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced.json'
+
+    schema = os.getenv('DICTIONARY_URL', None)
+    if schema is None:
+        schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
+        output['logs'].append(f"DICTIONARY_URL not found in environment using {schema}")
 
     method = input_data.get("method", None)
     assert method, "input data must contain a `method`"
     if method.lower() == 'put':
         # read from bucket, write to fhir store
-        _put(input_data, output, program, project, user)
+        _put(input_data, output, program, project, user, schema)
         # after pushing commits, create a snapshot file
         object_id = _get(input_data, output, program, project, user)
         output['snapshot'] = {'object_id': object_id}
@@ -360,8 +419,10 @@ def main():
         object_id = _get(input_data, output, program, project, user)
         output['object_id'] = object_id
     elif method.lower() == 'delete':
-        _empty_project(input_data, output, program, project, user, dictionary_path=schema,
+        _empty_project(output, program, project, user, dictionary_path=schema,
                        config_path="config.yaml")
+        fhir_delete(f"{program}-{project}", DEFAULT_ELASTIC)
+
     else:
         raise Exception(f"unknown method {method}")
 
@@ -369,10 +430,15 @@ def main():
     print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
-def _put(input_data, output, program, project, user):
+def _put(input_data: dict,
+         output: list[str],
+         program: str,
+         project: str,
+         user: dict,
+         schema: str):
     """Import data from bucket to graph, flat and fhir store."""
     # check permissions
-    can_create = _can_create(output, program, user)
+    can_create = _can_create(output, program, project, user)
     output['logs'].append(f"CAN CREATE: {can_create}")
     assert can_create, f"No create permissions on {program}"
     assert 'push' in input_data, "input data must contain a `push`"
@@ -393,7 +459,7 @@ def _put(input_data, output, program, project, user):
                 output['files'].append(str(_))
 
             # load the study into the database and elastic search
-            _load_all(project, f"{program}-{project}", output, file_path)
+            _load_all(project, f"{program}-{project}", output, file_path, schema)
 
         shutil.rmtree(f"/root/studies/{project}")
 
