@@ -412,11 +412,11 @@ def main():
         # read from bucket, write to fhir store
         _put(input_data, output, program, project, user, schema)
         # after pushing commits, create a snapshot file
-        object_id = _get(input_data, output, program, project, user)
+        object_id = _get(output, program, project, user)
         output['snapshot'] = {'object_id': object_id}
     elif method.lower() == 'get':
         # read fhir store, write to bucket
-        object_id = _get(input_data, output, program, project, user)
+        object_id = _get(output, program, project, user)
         output['object_id'] = object_id
     elif method.lower() == 'delete':
         _empty_project(output, program, project, user, dictionary_path=schema,
