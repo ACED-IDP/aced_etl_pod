@@ -50,7 +50,6 @@ RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc12" --no-ca
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
-RUN chmod +x /root/load_all
 
 RUN mkdir /root/studies
 RUN ls -la /root
