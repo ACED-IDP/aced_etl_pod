@@ -328,6 +328,7 @@ def _load_all(study: str,
                 """
                 study_meta = json.loads(study.readline())
                 discovery_load(project_id, _patients_count, study_meta["object"]["description"], study_meta["object"]["identifier_coding"])
+                output['logs'].append(f"Loaded discovery study {project_id}")
 
         logs = fhir_put(project_id, path=file_path,
                         elastic_url=DEFAULT_ELASTIC)
@@ -349,7 +350,7 @@ def _load_all(study: str,
             output['logs'].append(tb)
         return False
 
-    output['logs'].append(f"LOADED {study}")
+    output['logs'].append(f"Loaded {study}")
     if logs is not None:
         output['logs'].extend(logs)
     return True
@@ -376,7 +377,7 @@ def _get(output: list[str],
     output['logs'].extend(logs)
 
     discovery_data = discovery_get(f"{program}-{project}")
-    output['logs'].extend(f"_get discovery study: {str(discovery_data)}")
+    output['logs'].append(f"_get discovery study: {str(discovery_data)}")
 
     # zip and upload the exported files to bucket
     now = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -422,6 +423,7 @@ def _empty_project(output: list[str],
 
         discovery_data = discovery_get(f"{program}-{project}")
         if discovery_data not in [None, {}]:
+            output['logs'].append(f"Empty discovery study: {str(discovery_data)}")
             discovery_delete(f"{program}-{project}")
 
     except Exception as e:
