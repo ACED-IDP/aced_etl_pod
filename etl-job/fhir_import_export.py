@@ -59,48 +59,6 @@ def _get_program_project(input_data: dict) -> tuple:
     return input_data['project_id'].split('-')
 
 
-def _can_delete(output: list[str],
-                program: str,
-                project: str,
-                user: dict) -> bool:
-    """Check if user can delete a project in the given program.
-
-    Args:
-         output: output dict the json that will be returned to the caller
-         program: program Gen3 program(-project)
-         project: project Gen3 (program-)project
-         user: user dict from arborist (aka profile)
-     """
-    can_delete = True
-
-    required_resources = [
-         f"/programs/{program}",
-         f"/programs/{program}/projects"
-     ]
-    for required_resource in required_resources:
-        if required_resource not in user['resources']:
-            output['logs'].append(f"{required_resource} not found in user resources")
-            can_delete = False
-        else:
-            output['logs'].append(f"HAS RESOURCE {required_resource}")
-
-    required_services = [
-         f"/programs/{program}/projects/{project}"
-    ]
-    for required_service in required_services:
-        if required_service not in user['authz']:
-            output['logs'].append(f"{required_service} not found in user authz")
-            can_delete = False
-        else:
-            if {'method': 'delete', 'service': '*'} not in user['authz'][required_service]:
-                output['logs'].append(f"delete not found in user authz for {required_service}")
-                can_delete = False
-            else:
-                output['logs'].append(f"HAS SERVICE delete on resource {required_service}")
-
-    return can_delete
-
-
 def _can_create(output: list[str],
                 program: str,
                 project: str,
@@ -408,8 +366,8 @@ def _empty_project(output: list[str],
     """Clear out graph and flat metadata for project """
     # check permissions
     try:
-        can_delete = _can_delete(output, program, project, user)
-        assert can_delete, f"No delete permissions on {program}"
+        can_create = _can_create(output, program, project, user)
+        assert can_create, f"No create permissions on {program}"
 
         empty_project(program=program, project=project, dictionary_path=dictionary_path, config_path=config_path)
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
