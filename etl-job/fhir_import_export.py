@@ -414,8 +414,8 @@ def main():
         object_id = _get(output, program, project, user)
         output['object_id'] = object_id
     elif method.lower() == 'delete':
-        commit_id = input_data.get("commit_id", None)
-        if commit_id is not None:
+        commit_id, object_id = input_data.get("commit_id", None), input_data.get("object_id", None)
+        if commit_id is not None and object_id is not None:
             output["logs"].append(f"reseting to {commit_id}")
             file_path = f"/root/studies/{project}/commits/{commit_id}"
             if _download_and_unzip(object_id, file_path, output, f".g3t/state/meta-index.ndjson/{commit_id}/meta.zip"):
