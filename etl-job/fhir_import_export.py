@@ -418,7 +418,8 @@ def main():
         if commit_id is not None and object_id is not None:
             output["logs"].append(f"reseting to {commit_id}")
             file_path = f"/root/studies/{project}/commits/{commit_id}"
-            if _download_and_unzip(object_id, file_path, output, f".g3t/state/meta-index.ndjson/{commit_id}/meta.zip"):
+            if _download_and_unzip(object_id, file_path, output,
+                                   f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson.zip"):
                 for _ in pathlib.Path(file_path).glob('*'):
                     output['files'].append(str(_))
 
