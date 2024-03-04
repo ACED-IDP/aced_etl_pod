@@ -258,10 +258,11 @@ def _load_all(study: str,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        #Load disovery page if research study exists in commit
+        # Load disovery page if research study exists in commit
         if os.path.isfile(research_study):
-            output['logs'].append(f"Writing to metadata-service")
-            _patients_count = counts_project_index(elastic, project_id=project_id index="gen3.aced.io_patient_0")
+            output['logs'].append("Writing to metadata-service")
+            elastic = Elasticsearch([DEFAULT_ELASTIC], request_timeout=120)
+            _patients_count = counts_project_index(elastic=elastic, project_id=project_id, index="gen3.aced.io_patient_0")
             with open(research_study, "r") as study:
                 """
                 Is there ever a scenario where the researchStudy will have more than one line?
@@ -280,7 +281,6 @@ def _load_all(study: str,
         logs = fhir_put(project_id, path=file_path,
                         elastic_url=DEFAULT_ELASTIC)
         yaml.dump(logs, sys.stdout, default_flow_style=False)
-
 
     except ElasticsearchException as e:
         output['logs'].append(f"An ElasticSearch Exception occurred: {str(e)}")
@@ -370,7 +370,6 @@ def _empty_project(output: list[str],
         if discovery_data not in [None, {}]:
             discovery_delete(f"{program}-{project}")
 
-
     except Exception as e:
         output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
         tb = traceback.format_exc()
@@ -394,7 +393,6 @@ def main():
 
     input_data = _input_data()
     print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
-
 
     program, project = _get_program_project(input_data)
 
@@ -434,7 +432,7 @@ def main():
 
         elif commit_id is None:
             _empty_project(output, program, project, user, dictionary_path=schema,
-                       config_path="config.yaml")
+                           config_path="config.yaml")
 
     else:
         raise Exception(f"unknown method {method}")
@@ -479,4 +477,3 @@ def _put(input_data: dict,
 
 if __name__ == '__main__':
     main()
-
