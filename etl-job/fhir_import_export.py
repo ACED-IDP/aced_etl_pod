@@ -10,9 +10,10 @@ from datetime import datetime
 
 import yaml
 from aced_submission.fhir_store import fhir_get, fhir_put, fhir_delete
-from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat, delete_not_in_manifest
 from aced_submission.meta_flat_load import delete as meta_flat_delete
 from aced_submission.meta_graph_load import meta_upload, empty_project
+from aced_submission.meta_query import counts_project_index
 from aced_submission.meta_discovery_load import discovery_load, discovery_delete, discovery_get
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ElasticsearchException
@@ -257,21 +258,10 @@ def _load_all(study: str,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
 
-        # Load disovery page if research study exists in commit
+        #Load disovery page if research study exists in commit
         if os.path.isfile(research_study):
-            output['logs'].append("Writing to metadata-service")
-            elastic = Elasticsearch([DEFAULT_ELASTIC], request_timeout=120)
-            query = {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"match": {"project_id": project_id}}
-                        ]
-                    }
-                }
-            }
-            results = elastic.search(index="gen3.aced.io_patient_0", body=query, size=0)
-            _patients_count = results['hits']['total']['value']
+            output['logs'].append(f"Writing to metadata-service")
+            _patients_count = counts_project_index(elastic, project_id=project_id index="gen3.aced.io_patient_0")
             with open(research_study, "r") as study:
                 """
                 Is there ever a scenario where the researchStudy will have more than one line?
@@ -285,12 +275,12 @@ def _load_all(study: str,
                 'identifier_coding': ['https://aced-idp.org/synthea-delete#synthea-delete']}}
                 """
                 study_meta = json.loads(study.readline())
-                discovery_load(project_id, _patients_count, study_meta["object"]["description"], study_meta["object"]["identifier_coding"])
-                output['logs'].append(f"Loaded discovery study {project_id}")
+                discovery_load(project_id, _patients_count, study_meta["object"]["description"], study_meta["object"]["identifier_coding"], overwrite=True)
 
         logs = fhir_put(project_id, path=file_path,
                         elastic_url=DEFAULT_ELASTIC)
         yaml.dump(logs, sys.stdout, default_flow_style=False)
+
 
     except ElasticsearchException as e:
         output['logs'].append(f"An ElasticSearch Exception occurred: {str(e)}")
@@ -308,7 +298,7 @@ def _load_all(study: str,
             output['logs'].append(tb)
         return False
 
-    output['logs'].append(f"Loaded {study}")
+    output['logs'].append(f"LOADED {study}")
     if logs is not None:
         output['logs'].extend(logs)
     return True
@@ -333,9 +323,6 @@ def _get(output: list[str],
 
     logs = fhir_get(f"{program}-{project}", study_path, DEFAULT_ELASTIC)
     output['logs'].extend(logs)
-
-    discovery_data = discovery_get(f"{program}-{project}")
-    output['logs'].append(f"_get discovery study: {str(discovery_data)}")
 
     # zip and upload the exported files to bucket
     now = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -381,8 +368,8 @@ def _empty_project(output: list[str],
 
         discovery_data = discovery_get(f"{program}-{project}")
         if discovery_data not in [None, {}]:
-            output['logs'].append(f"Empty discovery study: {str(discovery_data)}")
             discovery_delete(f"{program}-{project}")
+
 
     except Exception as e:
         output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
@@ -395,6 +382,7 @@ def main():
     auth = _auth(token)
 
     # print("[out] authorized successfully")
+
     # print("[out] retrieving user info...")
     user = _user(auth)
 
@@ -402,10 +390,12 @@ def main():
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
     # print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
-    # output['env'] = {k: v for k, v in os.environ.items()}
+    output['env'] = {k: v for k, v in os.environ.items()}
 
     input_data = _input_data()
     print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
+
+
     program, project = _get_program_project(input_data)
 
     schema = os.getenv('DICTIONARY_URL', None)
@@ -426,7 +416,24 @@ def main():
         object_id = _get(output, program, project, user)
         output['object_id'] = object_id
     elif method.lower() == 'delete':
-        _empty_project(output, program, project, user, dictionary_path=schema,
+        commit_id = input_data.get("commit_id", None)
+        if commit_id is not None:
+            output["logs"].append(f"reseting to {commit_id}")
+            file_path = f"/root/studies/{project}/commits/{commit_id}"
+            if _download_and_unzip(object_id, file_path, output, f".g3t/state/meta-index.ndjson/{commit_id}/meta.zip"):
+                for _ in pathlib.Path(file_path).glob('*'):
+                    output['files'].append(str(_))
+
+            manifest_ids = []
+            with open(f"/root/studies/{project}/commits/{commit_id}/meta-index.ndjson") as f:
+                for line in f:
+                    manifest_ids.append(json.loads(line))
+
+            delete_not_in_manifest(manifest_ids, index=None, project_id=f"{program}-{project}")
+            delete_not_in_manifest(manifest_ids, index="fhir", project_id=f"{program}-{project}")
+
+        elif commit_id is None:
+            _empty_project(output, program, project, user, dictionary_path=schema,
                        config_path="config.yaml")
 
     else:
@@ -472,3 +479,4 @@ def _put(input_data: dict,
 
 if __name__ == '__main__':
     main()
+
