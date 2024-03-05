@@ -165,7 +165,7 @@ def _download(object_id: str,
         output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path} \
 FULL DOWNLOAD PATH: {full_download_path}")
-        return False, output
+        return False, output, full_download_path
 
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
     return True, output, full_download_path
@@ -347,7 +347,8 @@ def _get(output: list[str],
         config=config,
         from_=study_path,
         project_id=project_id,
-        metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
+        metadata={'submitter': None, 'metadata_version': '0.0.1',
+                  'is_metadata': True, 'is_snapshot': True},
         user=user,
         object_name=object_name,
         ignore_state=False)
@@ -369,11 +370,12 @@ def _reset_to_commit_id(output: list[str],
     file_path = f"/root/studies/{project}/commits/{commit_id}"
     pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
     source_path = f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson"
-    success, output = _download(object_id, file_path, output, source_path)
+    success, output, full_download_path = _download(object_id, file_path,
+                                                    output, source_path)
     if success:
         print("source dir contents: ", os.listdir(source_path))
         print("dest dir contents: ", os.listdir(file_path))
-        shutil.move(source_path, file_path)
+        shutil.move(source_path, full_download_path)
         for _ in pathlib.Path(file_path).glob('*'):
             output['files'].append(str(_))
             print("OUTPUT FILES: ", output['files'])
