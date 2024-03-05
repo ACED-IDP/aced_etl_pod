@@ -423,9 +423,10 @@ def main():
                                    f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson.zip"):
                 for _ in pathlib.Path(file_path).glob('*'):
                     output['files'].append(str(_))
+                    print("OUTPUT FILES: ", output['files'])
 
             manifest_ids = []
-            with open(f"{file_path}/meta-index.ndjson") as f:
+            with open(f"{file_path}/meta-index.ndjson", "r") as f:
                 for line in f:
                     manifest_ids.append(json.loads(line))
 
