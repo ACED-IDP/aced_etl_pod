@@ -148,11 +148,11 @@ def _can_read(output: list[str],
     return can_read
 
 
-def _download_and_unzip(object_id: str,
-                        file_path: str,
-                        output: list[str],
-                        file_name: str) -> tuple[bool, any]:
-    """Download and unzip object_id to downloads/{file_path}"""
+def _download(object_id: str,
+              file_path: str,
+              output: list[str],
+              file_name: str) -> tuple[bool, any]:
+    '""downloads a file from a bucket'
     try:
         token = _get_token()
         auth = _auth(token)
@@ -163,23 +163,35 @@ def _download_and_unzip(object_id: str,
         file_client.download_single(object_id, 'downloads')
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
-        output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
+        output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path} \
+FULL DOWNLOAD PATH: {full_download_path}")
         return False, output
 
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
+    return True, output, full_download_path
 
-    cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
-        if result.stderr:
-            output['logs'].append(result.stderr.read().decode())
-        if result.stdout:
-            output['logs'].append(result.stdout.read().decode())
-        return False, output
 
-    output['logs'].append(f"UNZIPPED {file_path}")
-    return True, output
+def _download_and_unzip(object_id: str,
+                        file_path: str,
+                        output: list[str],
+                        file_name: str) -> tuple[bool, any]:
+    """Download and unzip object_id to downloads/{file_path}"""
+    success, output, full_download_path = _download(object_id, file_path,
+                                                    output, file_name)
+    if success:
+        cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
+            if result.stderr:
+                output['logs'].append(result.stderr.read().decode())
+            if result.stdout:
+                output['logs'].append(result.stdout.read().decode())
+            return False, output
+
+        output['logs'].append(f"UNZIPPED {file_path}")
+        return True, output
+    return False, output
 
 
 def _load_all(study: str,
@@ -353,16 +365,15 @@ def _reset_to_commit_id(output: list[str],
                         object_id: str):
     """Retrieve uploaded metadata manifest and reset elasticsearch
        Indices to the manifest state"""
-
     output["logs"].append(f"reseting to {commit_id}")
     file_path = f"/root/studies/{project}/commits/{commit_id}"
     pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
-    success, output = _download_and_unzip(
-        object_id,
-        file_path,
-        output,
-        f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}")
+    source_path = f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson"
+    success, output = _download(object_id, file_path, output, source_path)
     if success:
+        print("source dir contents: ", os.listdir(source_path))
+        print("dest dir contents: ", os.listdir(file_path))
+        shutil.move(source_path, file_path)
         for _ in pathlib.Path(file_path).glob('*'):
             output['files'].append(str(_))
             print("OUTPUT FILES: ", output['files'])
@@ -488,7 +499,6 @@ def _put(input_data: dict,
         assert commit_id, "commit_id must not be empty"
         file_path = f"/root/studies/{project}/commits/{commit_id}"
         pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
-        # get the meta data file
         success, output = _download_and_unzip(object_id, file_path,
                                               output, commit['meta_path'])
         if success:
