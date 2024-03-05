@@ -10,11 +10,13 @@ from datetime import datetime
 
 import yaml
 from aced_submission.fhir_store import fhir_get, fhir_put, fhir_delete
-from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat, delete_not_in_manifest
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC, \
+    denormalize_patient, load_flat, delete_not_in_manifest
 from aced_submission.meta_flat_load import delete as meta_flat_delete
 from aced_submission.meta_graph_load import meta_upload, empty_project
 from aced_submission.meta_query import counts_project_index
-from aced_submission.meta_discovery_load import discovery_load, discovery_delete, discovery_get
+from aced_submission.meta_discovery_load import discovery_load, \
+    discovery_delete, discovery_get
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ElasticsearchException
 from gen3.auth import Gen3Auth
@@ -149,7 +151,7 @@ def _can_read(output: list[str],
 def _download_and_unzip(object_id: str,
                         file_path: str,
                         output: list[str],
-                        file_name: str) -> bool:
+                        file_name: str) -> tuple[bool, any]:
     """Download and unzip object_id to downloads/{file_path}"""
     try:
         token = _get_token()
@@ -158,12 +160,11 @@ def _download_and_unzip(object_id: str,
         full_download_path = (pathlib.Path('downloads') / file_name)
         full_download_path_parent = full_download_path.parent
         full_download_path_parent.mkdir(parents=True, exist_ok=True)
-        file_client.download_single(object_id, 'downloads' )
+        file_client.download_single(object_id, 'downloads')
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
-        raise e
-        return False
+        return False, output
 
     output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
 
@@ -175,10 +176,10 @@ def _download_and_unzip(object_id: str,
             output['logs'].append(result.stderr.read().decode())
         if result.stdout:
             output['logs'].append(result.stdout.read().decode())
-        return False
+        return False, output
 
     output['logs'].append(f"UNZIPPED {file_path}")
-    return True
+    return True, output
 
 
 def _load_all(study: str,
@@ -218,9 +219,9 @@ def _load_all(study: str,
 
         output['logs'].append(f"Simplifying study: {file_path}")
         simplify_directory(file_path, pattern="**/*.*",
-                    output_path=extraction_path,
-                    schema_path=schema, dialect='PFB',
-                    config_path='config.yaml')
+                           output_path=extraction_path,
+                           schema_path=schema, dialect='PFB',
+                           config_path='config.yaml')
 
         meta_upload(source_path=extraction_path,
                     program=program, project=project,
@@ -250,7 +251,8 @@ def _load_all(study: str,
                       schema_path=schema, output_path=None)
 
         if os.path.isfile(document_reference_path):
-            load_flat(project_id=project_id, index="file", path=document_reference_path,
+            load_flat(project_id=project_id, index="file",
+                      path=document_reference_path,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
         else:
@@ -344,6 +346,38 @@ def _get(output: list[str],
     return object_id
 
 
+def _reset_to_commit_id(output: list[str],
+                        program: str,
+                        project: str,
+                        commit_id: str,
+                        object_id: str):
+    """Retrieve uploaded metadata manifest and reset elasticsearch
+       Indices to the manifest state"""
+
+    output["logs"].append(f"reseting to {commit_id}")
+    file_path = f"/root/studies/{project}/commits/{commit_id}"
+    pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
+    success, output = _download_and_unzip(
+        object_id,
+        file_path,
+        output,
+        f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}")
+    if success:
+        for _ in pathlib.Path(file_path).glob('*'):
+            output['files'].append(str(_))
+            print("OUTPUT FILES: ", output['files'])
+
+        manifest_ids = []
+        with open(f"{file_path}/meta-index.ndjson", "r") as f:
+            for line in f:
+                manifest_ids.append(json.loads(line))
+
+        delete_not_in_manifest(manifest_ids, index=None,
+                               project_id=f"{program}-{project}")
+        delete_not_in_manifest(manifest_ids, index="fhir",
+                               project_id=f"{program}-{project}")
+
+
 def _empty_project(output: list[str],
                    program: str,
                    project: str,
@@ -356,7 +390,8 @@ def _empty_project(output: list[str],
         can_create = _can_create(output, program, project, user)
         assert can_create, f"No create permissions on {program}"
 
-        empty_project(program=program, project=project, dictionary_path=dictionary_path, config_path=config_path)
+        empty_project(program=program, project=project,
+                      dictionary_path=dictionary_path, config_path=config_path)
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
 
         for index in ["patient", "observation", "file"]:
@@ -399,7 +434,8 @@ def main():
     schema = os.getenv('DICTIONARY_URL', None)
     if schema is None:
         schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
-        output['logs'].append(f"DICTIONARY_URL not found in environment using {schema}")
+        output['logs'].append(
+            f"DICTIONARY_URL not found in environment using {schema}")
 
     method = input_data.get("method", None)
     assert method, "input data must contain a `method`"
@@ -414,33 +450,20 @@ def main():
         object_id = _get(output, program, project, user)
         output['object_id'] = object_id
     elif method.lower() == 'delete':
-        commit_id, object_id = input_data.get("commit_id", None), input_data.get("object_id", None)
+        commit_id = input_data.get("commit_id", None)
+        object_id = input_data.get("object_id", None)
         if commit_id is not None and object_id is not None:
-            output["logs"].append(f"reseting to {commit_id}")
-            file_path = f"/root/studies/{project}/commits/{commit_id}"
-            pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
-            if _download_and_unzip(object_id, file_path, output,
-                                   f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}"):
-                for _ in pathlib.Path(file_path).glob('*'):
-                    output['files'].append(str(_))
-                    print("OUTPUT FILES: ", output['files'])
-
-            manifest_ids = []
-            with open(f"{file_path}/meta-index.ndjson", "r") as f:
-                for line in f:
-                    manifest_ids.append(json.loads(line))
-
-            delete_not_in_manifest(manifest_ids, index=None, project_id=f"{program}-{project}")
-            delete_not_in_manifest(manifest_ids, index="fhir", project_id=f"{program}-{project}")
+            _reset_to_commit_id(output, program, project, commit_id, object_id)
 
         elif commit_id is None:
-            _empty_project(output, program, project, user, dictionary_path=schema,
-                           config_path="config.yaml")
+            _empty_project(output, program, project, user,
+                           dictionary_path=schema, config_path="config.yaml")
 
     else:
         raise Exception(f"unknown method {method}")
 
-    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
+    # note, only the last output (a line in stdout with `[out]` prefix)
+    # is returned to the caller
     print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
@@ -466,14 +489,16 @@ def _put(input_data: dict,
         file_path = f"/root/studies/{project}/commits/{commit_id}"
         pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
         # get the meta data file
-        if _download_and_unzip(object_id, file_path, output, commit['meta_path']):
-
+        success, output = _download_and_unzip(object_id, file_path,
+                                              output, commit['meta_path'])
+        if success:
             # tell user what files were found
             for _ in pathlib.Path(file_path).glob('*'):
                 output['files'].append(str(_))
 
             # load the study into the database and elastic search
-            _load_all(project, f"{program}-{project}", output, file_path, schema)
+            _load_all(project, f"{program}-{project}",
+                      output, file_path, schema)
 
         shutil.rmtree(f"/root/studies/{project}")
 
