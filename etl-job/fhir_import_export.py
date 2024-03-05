@@ -420,7 +420,7 @@ def main():
             file_path = f"/root/studies/{project}/commits/{commit_id}"
             pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
             if _download_and_unzip(object_id, file_path, output,
-                                   f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson.zip"):
+                                   f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}"):
                 for _ in pathlib.Path(file_path).glob('*'):
                     output['files'].append(str(_))
                     print("OUTPUT FILES: ", output['files'])
