@@ -105,7 +105,7 @@ def _can_create(output: dict,
     return can_create
 
 
-def _can_read(output: list[str],
+def _can_read(output: dict,
               program: str,
               project: str,
               user: dict) -> bool:
@@ -149,7 +149,7 @@ def _can_read(output: list[str],
 
 
 def _download(object_id: str,
-              output: list[str],
+              output: dict,
               file_name: str) -> tuple[bool, any]:
     '""downloads a file from a bucket'
     try:
@@ -172,7 +172,7 @@ TO PATH: {full_download_path}")
 
 def _download_and_unzip(object_id: str,
                         file_path: str,
-                        output: list[str],
+                        output: dict,
                         file_name: str) -> tuple[bool, any]:
     """Download and unzip object_id to downloads/{file_path}"""
     success, output, full_download_path = _download(object_id,
@@ -195,7 +195,7 @@ def _download_and_unzip(object_id: str,
 
 def _load_all(study: str,
               project_id: str,
-              output: list[str],
+              output: dict,
               file_path: str,
               schema: str) -> bool:
     config = "/root/config.yaml"
@@ -317,7 +317,7 @@ def _load_all(study: str,
     return True
 
 
-def _get(output: list[str],
+def _get(output: dict,
          program: str,
          project: str,
          user: dict) -> str:
@@ -369,37 +369,42 @@ def _reset_to_commit_id(output: dict,
     """Retrieve uploaded metadata manifest and reset elasticsearch
        Indices to the manifest state"""
 
-    can_create = _can_create(output, program, project, user)
-    assert can_create, f"No create permissions on {program}"
+    try:
+        can_create = _can_create(output, program, project, user)
+        assert can_create, f"No create permissions on {program}"
 
-    output["logs"].append(f"reseting to {commit_id}")
-    file_path = f"/root/studies/{project}/commits/{commit_id}"
-    pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
+        output["logs"].append(f"reseting to {commit_id}")
+        file_path = f"/root/studies/{project}/commits/{commit_id}"
+        pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
 
-    source_path = f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson"
-    success, output, full_download_path = _download(object_id,
-                                                    output, source_path)
-    if success:
-        shutil.move(full_download_path, file_path)
-        for _ in pathlib.Path(file_path).glob('*'):
-            output['files'].append(str(_))
+        source_path = f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson"
+        success, output, full_download_path = _download(object_id,
+                                                        output, source_path)
+        if success:
+            shutil.move(full_download_path, file_path)
+            for _ in pathlib.Path(file_path).glob('*'):
+                output['files'].append(str(_))
 
-        manifest_ids = []
-        with open(f"{file_path}/meta-index.ndjson", "r") as f:
-            for line in f:
-                manifest_ids.append(json.loads(line))
+            manifest_ids = []
+            with open(f"{file_path}/meta-index.ndjson", "r") as f:
+                for line in f:
+                    manifest_ids.append(json.loads(line))
 
-        empty_project(program=program, project=project,
-                      dictionary_path=dictionary_path,
-                      config_path=config_path, manifest=manifest_ids)
+            empty_project(program=program, project=project,
+                          dictionary_path=dictionary_path,
+                          config_path=config_path, manifest=manifest_ids)
 
-        output = delete_not_in_manifest(manifest_ids, index=None,
-                                        project_id=f"{program}-{project}",
-                                        output=output)
+            output = delete_not_in_manifest(manifest_ids, index=None,
+                                            project_id=f"{program}-{project}",
+                                            output=output)
 
-        output = delete_not_in_manifest(manifest_ids, index="fhir",
-                                        project_id=f"{program}-{project}",
-                                        logs=output)
+            output = delete_not_in_manifest(manifest_ids, index="fhir",
+                                            project_id=f"{program}-{project}",
+                                            output=output)
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
+        tb = traceback.format_exc()
+        output['logs'].append(tb)
 
 
 def _empty_project(output: dict,
@@ -495,7 +500,7 @@ def main():
 
 
 def _put(input_data: dict,
-         output: list[str],
+         output: dict,
          program: str,
          project: str,
          user: dict,
