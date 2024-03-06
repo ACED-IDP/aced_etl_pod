@@ -149,7 +149,6 @@ def _can_read(output: list[str],
 
 
 def _download(object_id: str,
-              file_path: str,
               output: list[str],
               file_name: str) -> tuple[bool, any]:
     '""downloads a file from a bucket'
@@ -163,11 +162,11 @@ def _download(object_id: str,
         file_client.download_single(object_id, 'downloads')
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
-        output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path} \
-FULL DOWNLOAD PATH: {full_download_path}")
+        output['logs'].append(f"ERROR DOWNLOADING {object_id} \
+TO PATH: {full_download_path}")
         return False, output, full_download_path
 
-    output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
+    output['logs'].append(f"DOWNLOADED {object_id}")
     return True, output, full_download_path
 
 
@@ -176,7 +175,7 @@ def _download_and_unzip(object_id: str,
                         output: list[str],
                         file_name: str) -> tuple[bool, any]:
     """Download and unzip object_id to downloads/{file_path}"""
-    success, output, full_download_path = _download(object_id, file_path,
+    success, output, full_download_path = _download(object_id,
                                                     output, file_name)
     if success:
         cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
@@ -370,12 +369,10 @@ def _reset_to_commit_id(output: list[str],
     file_path = f"/root/studies/{project}/commits/{commit_id}"
     pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
     source_path = f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson"
-    success, output, full_download_path = _download(object_id, file_path,
+    success, output, full_download_path = _download(object_id,
                                                     output, source_path)
     if success:
-        print("source dir contents: ", os.listdir(source_path))
-        print("dest dir contents: ", os.listdir(file_path))
-        shutil.move(source_path, full_download_path)
+        shutil.move(full_download_path, file_path)
         for _ in pathlib.Path(file_path).glob('*'):
             output['files'].append(str(_))
             print("OUTPUT FILES: ", output['files'])
