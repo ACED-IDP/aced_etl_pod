@@ -62,7 +62,7 @@ def _get_program_project(input_data: dict) -> tuple:
     return input_data['project_id'].split('-')
 
 
-def _can_create(output: list[str],
+def _can_create(output: dict,
                 program: str,
                 project: str,
                 user: dict) -> bool:
@@ -358,16 +358,24 @@ def _get(output: list[str],
     return object_id
 
 
-def _reset_to_commit_id(output: list[str],
+def _reset_to_commit_id(output: dict,
                         program: str,
                         project: str,
+                        user: dict,
                         commit_id: str,
-                        object_id: str):
+                        object_id: str,
+                        config_path: str,
+                        dictionary_path: str = None,):
     """Retrieve uploaded metadata manifest and reset elasticsearch
        Indices to the manifest state"""
+
+    can_create = _can_create(output, program, project, user)
+    assert can_create, f"No create permissions on {program}"
+
     output["logs"].append(f"reseting to {commit_id}")
     file_path = f"/root/studies/{project}/commits/{commit_id}"
     pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
+
     source_path = f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson"
     success, output, full_download_path = _download(object_id,
                                                     output, source_path)
@@ -375,20 +383,26 @@ def _reset_to_commit_id(output: list[str],
         shutil.move(full_download_path, file_path)
         for _ in pathlib.Path(file_path).glob('*'):
             output['files'].append(str(_))
-            print("OUTPUT FILES: ", output['files'])
 
         manifest_ids = []
         with open(f"{file_path}/meta-index.ndjson", "r") as f:
             for line in f:
                 manifest_ids.append(json.loads(line))
 
-        delete_not_in_manifest(manifest_ids, index=None,
-                               project_id=f"{program}-{project}")
-        delete_not_in_manifest(manifest_ids, index="fhir",
-                               project_id=f"{program}-{project}")
+        empty_project(program=program, project=project,
+                      dictionary_path=dictionary_path,
+                      config_path=config_path, manifest=manifest_ids)
+
+        output = delete_not_in_manifest(manifest_ids, index=None,
+                                        project_id=f"{program}-{project}",
+                                        output=output)
+
+        output = delete_not_in_manifest(manifest_ids, index="fhir",
+                                        project_id=f"{program}-{project}",
+                                        logs=output)
 
 
-def _empty_project(output: list[str],
+def _empty_project(output: dict,
                    program: str,
                    project: str,
                    user: dict,
@@ -401,7 +415,9 @@ def _empty_project(output: list[str],
         assert can_create, f"No create permissions on {program}"
 
         empty_project(program=program, project=project,
-                      dictionary_path=dictionary_path, config_path=config_path)
+                      dictionary_path=dictionary_path,
+                      config_path=config_path,
+                      manifest=None)
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
 
         for index in ["patient", "observation", "file"]:
@@ -463,12 +479,13 @@ def main():
         commit_id = input_data.get("commit_id", None)
         object_id = input_data.get("object_id", None)
         if commit_id is not None and object_id is not None:
-            _reset_to_commit_id(output, program, project, commit_id, object_id)
-
+            _reset_to_commit_id(output, program, project,
+                                user, commit_id, object_id,
+                                config_path="config.yaml",
+                                dictionary_path=schema)
         elif commit_id is None:
             _empty_project(output, program, project, user,
                            dictionary_path=schema, config_path="config.yaml")
-
     else:
         raise Exception(f"unknown method {method}")
 
