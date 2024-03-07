@@ -10,10 +10,13 @@ from datetime import datetime
 
 import yaml
 from aced_submission.fhir_store import fhir_get, fhir_put, fhir_delete
-from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC, \
+    denormalize_patient, load_flat, delete_not_in_manifest
 from aced_submission.meta_flat_load import delete as meta_flat_delete
 from aced_submission.meta_graph_load import meta_upload, empty_project
-from aced_submission.meta_discovery_load import discovery_load, discovery_delete, discovery_get
+from aced_submission.meta_query import counts_project_index
+from aced_submission.meta_discovery_load import discovery_load, \
+    discovery_delete, discovery_get
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ElasticsearchException
 from gen3.auth import Gen3Auth
@@ -59,7 +62,7 @@ def _get_program_project(input_data: dict) -> tuple:
     return input_data['project_id'].split('-')
 
 
-def _can_create(output: list[str],
+def _can_create(output: dict,
                 program: str,
                 project: str,
                 user: dict) -> bool:
@@ -102,7 +105,7 @@ def _can_create(output: list[str],
     return can_create
 
 
-def _can_read(output: list[str],
+def _can_read(output: dict,
               program: str,
               project: str,
               user: dict) -> bool:
@@ -145,11 +148,10 @@ def _can_read(output: list[str],
     return can_read
 
 
-def _download_and_unzip(object_id: str,
-                        file_path: str,
-                        output: list[str],
-                        file_name: str) -> bool:
-    """Download and unzip object_id to downloads/{file_path}"""
+def _download(object_id: str,
+              output: dict,
+              file_name: str) -> tuple[bool, any]:
+    '""downloads a file from a bucket'
     try:
         token = _get_token()
         auth = _auth(token)
@@ -157,32 +159,43 @@ def _download_and_unzip(object_id: str,
         full_download_path = (pathlib.Path('downloads') / file_name)
         full_download_path_parent = full_download_path.parent
         full_download_path_parent.mkdir(parents=True, exist_ok=True)
-        file_client.download_single(object_id, 'downloads' )
+        file_client.download_single(object_id, 'downloads')
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
-        output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
-        raise e
-        return False
+        output['logs'].append(f"ERROR DOWNLOADING {object_id} \
+TO PATH: {full_download_path}")
+        return False, output, full_download_path
 
-    output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
+    output['logs'].append(f"DOWNLOADED {object_id}")
+    return True, output, full_download_path
 
-    cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
-        if result.stderr:
-            output['logs'].append(result.stderr.read().decode())
-        if result.stdout:
-            output['logs'].append(result.stdout.read().decode())
-        return False
 
-    output['logs'].append(f"UNZIPPED {file_path}")
-    return True
+def _download_and_unzip(object_id: str,
+                        file_path: str,
+                        output: dict,
+                        file_name: str) -> tuple[bool, any]:
+    """Download and unzip object_id to downloads/{file_path}"""
+    success, output, full_download_path = _download(object_id,
+                                                    output, file_name)
+    if success:
+        cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
+            if result.stderr:
+                output['logs'].append(result.stderr.read().decode())
+            if result.stdout:
+                output['logs'].append(result.stdout.read().decode())
+            return False, output
+
+        output['logs'].append(f"UNZIPPED {file_path}")
+        return True, output
+    return False, output
 
 
 def _load_all(study: str,
               project_id: str,
-              output: list[str],
+              output: dict,
               file_path: str,
               schema: str) -> bool:
     config = "/root/config.yaml"
@@ -217,9 +230,9 @@ def _load_all(study: str,
 
         output['logs'].append(f"Simplifying study: {file_path}")
         simplify_directory(file_path, pattern="**/*.*",
-                    output_path=extraction_path,
-                    schema_path=schema, dialect='PFB',
-                    config_path='config.yaml')
+                           output_path=extraction_path,
+                           schema_path=schema, dialect='PFB',
+                           config_path='config.yaml')
 
         meta_upload(source_path=extraction_path,
                     program=program, project=project,
@@ -249,7 +262,8 @@ def _load_all(study: str,
                       schema_path=schema, output_path=None)
 
         if os.path.isfile(document_reference_path):
-            load_flat(project_id=project_id, index="file", path=document_reference_path,
+            load_flat(project_id=project_id, index="file",
+                      path=document_reference_path,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       schema_path=schema, output_path=None)
         else:
@@ -261,17 +275,7 @@ def _load_all(study: str,
         if os.path.isfile(research_study):
             output['logs'].append("Writing to metadata-service")
             elastic = Elasticsearch([DEFAULT_ELASTIC], request_timeout=120)
-            query = {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"match": {"project_id": project_id}}
-                        ]
-                    }
-                }
-            }
-            results = elastic.search(index="gen3.aced.io_patient_0", body=query, size=0)
-            _patients_count = results['hits']['total']['value']
+            _patients_count = counts_project_index(elastic=elastic, project_id=project_id, index="gen3.aced.io_patient_0")
             with open(research_study, "r") as study:
                 """
                 Is there ever a scenario where the researchStudy will have more than one line?
@@ -285,8 +289,7 @@ def _load_all(study: str,
                 'identifier_coding': ['https://aced-idp.org/synthea-delete#synthea-delete']}}
                 """
                 study_meta = json.loads(study.readline())
-                discovery_load(project_id, _patients_count, study_meta["object"]["description"], study_meta["object"]["identifier_coding"])
-                output['logs'].append(f"Loaded discovery study {project_id}")
+                discovery_load(project_id, _patients_count, study_meta["object"]["description"], study_meta["object"]["identifier_coding"], overwrite=True)
 
         logs = fhir_put(project_id, path=file_path,
                         elastic_url=DEFAULT_ELASTIC)
@@ -308,13 +311,13 @@ def _load_all(study: str,
             output['logs'].append(tb)
         return False
 
-    output['logs'].append(f"Loaded {study}")
+    output['logs'].append(f"LOADED {study}")
     if logs is not None:
         output['logs'].extend(logs)
     return True
 
 
-def _get(output: list[str],
+def _get(output: dict,
          program: str,
          project: str,
          user: dict) -> str:
@@ -334,9 +337,6 @@ def _get(output: list[str],
     logs = fhir_get(f"{program}-{project}", study_path, DEFAULT_ELASTIC)
     output['logs'].extend(logs)
 
-    discovery_data = discovery_get(f"{program}-{project}")
-    output['logs'].append(f"_get discovery study: {str(discovery_data)}")
-
     # zip and upload the exported files to bucket
     now = datetime.now().strftime("%Y%m%d-%H%M%S")
     object_name = f'{project_id}_{now}_SNAPSHOT.zip'
@@ -346,7 +346,8 @@ def _get(output: list[str],
         config=config,
         from_=study_path,
         project_id=project_id,
-        metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
+        metadata={'submitter': None, 'metadata_version': '0.0.1',
+                  'is_metadata': True, 'is_snapshot': True},
         user=user,
         object_name=object_name,
         ignore_state=False)
@@ -357,7 +358,56 @@ def _get(output: list[str],
     return object_id
 
 
-def _empty_project(output: list[str],
+def _reset_to_commit_id(output: dict,
+                        program: str,
+                        project: str,
+                        user: dict,
+                        commit_id: str,
+                        object_id: str,
+                        config_path: str,
+                        dictionary_path: str = None,):
+    """Retrieve uploaded metadata manifest and reset elasticsearch
+       Indices to the manifest state"""
+
+    try:
+        can_create = _can_create(output, program, project, user)
+        assert can_create, f"No create permissions on {program}"
+
+        output["logs"].append(f"reseting to {commit_id}")
+        file_path = f"/root/studies/{project}/commits/{commit_id}"
+        pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
+
+        source_path = f".g3t/state/{f'{program}-{project}'}/commits/{commit_id}/meta-index.ndjson"
+        success, output, full_download_path = _download(object_id,
+                                                        output, source_path)
+        if success:
+            shutil.move(full_download_path, file_path)
+            for _ in pathlib.Path(file_path).glob('*'):
+                output['files'].append(str(_))
+
+            manifest_ids = []
+            with open(f"{file_path}/meta-index.ndjson", "r") as f:
+                for line in f:
+                    manifest_ids.append(json.loads(line))
+
+            empty_project(program=program, project=project,
+                          dictionary_path=dictionary_path,
+                          config_path=config_path, manifest=manifest_ids)
+
+            output = delete_not_in_manifest(manifest_ids, index=None,
+                                            project_id=f"{program}-{project}",
+                                            output=output)
+
+            output = delete_not_in_manifest(manifest_ids, index="fhir",
+                                            project_id=f"{program}-{project}",
+                                            output=output)
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
+        tb = traceback.format_exc()
+        output['logs'].append(tb)
+
+
+def _empty_project(output: dict,
                    program: str,
                    project: str,
                    user: dict,
@@ -369,7 +419,10 @@ def _empty_project(output: list[str],
         can_create = _can_create(output, program, project, user)
         assert can_create, f"No create permissions on {program}"
 
-        empty_project(program=program, project=project, dictionary_path=dictionary_path, config_path=config_path)
+        empty_project(program=program, project=project,
+                      dictionary_path=dictionary_path,
+                      config_path=config_path,
+                      manifest=None)
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
 
         for index in ["patient", "observation", "file"]:
@@ -381,7 +434,6 @@ def _empty_project(output: list[str],
 
         discovery_data = discovery_get(f"{program}-{project}")
         if discovery_data not in [None, {}]:
-            output['logs'].append(f"Empty discovery study: {str(discovery_data)}")
             discovery_delete(f"{program}-{project}")
 
     except Exception as e:
@@ -395,6 +447,7 @@ def main():
     auth = _auth(token)
 
     # print("[out] authorized successfully")
+
     # print("[out] retrieving user info...")
     user = _user(auth)
 
@@ -402,16 +455,18 @@ def main():
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
     # print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
-    # output['env'] = {k: v for k, v in os.environ.items()}
+    output['env'] = {k: v for k, v in os.environ.items()}
 
     input_data = _input_data()
     print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
+
     program, project = _get_program_project(input_data)
 
     schema = os.getenv('DICTIONARY_URL', None)
     if schema is None:
         schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced-test.json'
-        output['logs'].append(f"DICTIONARY_URL not found in environment using {schema}")
+        output['logs'].append(
+            f"DICTIONARY_URL not found in environment using {schema}")
 
     method = input_data.get("method", None)
     assert method, "input data must contain a `method`"
@@ -426,18 +481,26 @@ def main():
         object_id = _get(output, program, project, user)
         output['object_id'] = object_id
     elif method.lower() == 'delete':
-        _empty_project(output, program, project, user, dictionary_path=schema,
-                       config_path="config.yaml")
-
+        commit_id = input_data.get("commit_id", None)
+        object_id = input_data.get("object_id", None)
+        if commit_id is not None and object_id is not None:
+            _reset_to_commit_id(output, program, project,
+                                user, commit_id, object_id,
+                                config_path="config.yaml",
+                                dictionary_path=schema)
+        elif commit_id is None:
+            _empty_project(output, program, project, user,
+                           dictionary_path=schema, config_path="config.yaml")
     else:
         raise Exception(f"unknown method {method}")
 
-    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
+    # note, only the last output (a line in stdout with `[out]` prefix)
+    # is returned to the caller
     print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
 def _put(input_data: dict,
-         output: list[str],
+         output: dict,
          program: str,
          project: str,
          user: dict,
@@ -457,15 +520,16 @@ def _put(input_data: dict,
         assert commit_id, "commit_id must not be empty"
         file_path = f"/root/studies/{project}/commits/{commit_id}"
         pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
-        # get the meta data file
-        if _download_and_unzip(object_id, file_path, output, commit['meta_path']):
-
+        success, output = _download_and_unzip(object_id, file_path,
+                                              output, commit['meta_path'])
+        if success:
             # tell user what files were found
             for _ in pathlib.Path(file_path).glob('*'):
                 output['files'].append(str(_))
 
             # load the study into the database and elastic search
-            _load_all(project, f"{program}-{project}", output, file_path, schema)
+            _load_all(project, f"{program}-{project}",
+                      output, file_path, schema)
 
         shutil.rmtree(f"/root/studies/{project}")
 
