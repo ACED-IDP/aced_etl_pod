@@ -18,10 +18,11 @@ from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ElasticsearchException
 from gen3.auth import Gen3Auth
 from gen3.file import Gen3File
-from gen3_util.config import Config
-from gen3_util.meta.uploader import cp
-from iceberg_tools.data.simplifier import simplify_directory
+from gen3_tracker.config import Config
+from gen3_tracker.meta.gen3.jobs import cp
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
+
+from iceberg_tools.data.simplifier import simplify_directory
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
