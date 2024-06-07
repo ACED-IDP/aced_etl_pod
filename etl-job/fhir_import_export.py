@@ -334,7 +334,7 @@ def _get(output: list[str],
     object_name = f'{project_id}_{now}_SNAPSHOT.zip'
 
     config = Config()
-    bucket_name = get_program_bucket(config=config, auth=auth)
+    bucket_name = get_program_bucket(config=config, program=program, auth=auth)
     cp_result = cp(
         config=config,
         from_=study_path,
