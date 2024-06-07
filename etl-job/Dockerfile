@@ -57,7 +57,7 @@ RUN pwd
 RUN ls -l /root
 
 # TODO - should this belong in etl pod repo / helm?
-RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
+RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/development/config.yaml -o config.yaml
 RUN chmod +x /root/add-ucl-to-ca-certs.sh
 RUN /root/add-ucl-to-ca-certs.sh
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
