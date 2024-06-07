@@ -33,12 +33,12 @@ def _get_token() -> str:
     return os.environ.get('ACCESS_TOKEN', None)
 
 
-def _auth() -> Gen3Auth:
+def _auth(access_token) -> Gen3Auth:
     """Authenticate using ACCESS_TOKEN"""
     # print("[out] authorizing...")
-    # if access_token:
+    if access_token:
         # use access token from environment (set by sower)
-        # return Gen3Auth(refresh_file=f"accesstoken:///{access_token}")
+        return Gen3Auth(refresh_file=f"accesstoken:///{access_token}")
     # no access token, use refresh token set in default ~/.gen3/credentials.json location
     return Gen3Auth()
 
@@ -387,7 +387,6 @@ def main():
 
     output = {'user': user['email'], 'files': [], 'logs': []}
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    # print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
     # output['env'] = {k: v for k, v in os.environ.items()}
 
