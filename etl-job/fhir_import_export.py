@@ -20,6 +20,7 @@ from gen3.auth import Gen3Auth
 from gen3.file import Gen3File
 from gen3_tracker.config import Config
 from gen3_tracker.gen3.jobs import cp
+from gen3_tracker.gen3.buckets import get_program_bucket
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 
 from iceberg_tools.data.simplifier import simplify_directory
@@ -307,7 +308,8 @@ def _load_all(study: str,
 def _get(output: list[str],
          program: str,
          project: str,
-         user: dict) -> str:
+         user: dict,
+         auth: Gen3Auth) -> str:
     """Export data from the fhir store to bucket, returns object_id."""
     can_read = _can_read(output, program, project, user)
     if not can_read:
@@ -332,10 +334,13 @@ def _get(output: list[str],
     object_name = f'{project_id}_{now}_SNAPSHOT.zip'
 
     config = Config()
+    bucket_name = get_program_bucket(config=config, auth=auth)
     cp_result = cp(
         config=config,
         from_=study_path,
         project_id=project_id,
+        auth=auth,
+        bucket_name=bucket_name,
         metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
         user=user,
         object_name=object_name,
@@ -406,11 +411,11 @@ def main():
         # read from bucket, write to fhir store
         _put(input_data, output, program, project, user, schema)
         # after pushing commits, create a snapshot file
-        object_id = _get(output, program, project, user)
+        object_id = _get(output, program, project, user, auth)
         output['snapshot'] = {'object_id': object_id}
     elif method.lower() == 'get':
         # read fhir store, write to bucket
-        object_id = _get(output, program, project, user)
+        object_id = _get(output, program, project, user, auth)
         output['object_id'] = object_id
     elif method.lower() == 'delete':
         _empty_project(output, program, project, user, dictionary_path=schema,
