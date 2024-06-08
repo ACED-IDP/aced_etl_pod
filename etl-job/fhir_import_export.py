@@ -19,8 +19,7 @@ from elasticsearch.exceptions import ElasticsearchException
 from gen3.auth import Gen3Auth
 from gen3.file import Gen3File
 from gen3_tracker.config import Config
-from gen3_tracker.gen3.jobs import cp
-from gen3_tracker.gen3.buckets import get_program_bucket
+from gen3_tracker.git.snapshotter import push_snapshot
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 
 from iceberg_tools.data.simplifier import simplify_directory
@@ -334,18 +333,11 @@ def _get(output: list[str],
     object_name = f'{project_id}_{now}_SNAPSHOT.zip'
 
     config = Config()
-    bucket_name = get_program_bucket(config=config, program=program, auth=auth)
-    cp_result = cp(
+    cp_result = push_snapshot(
         config=config,
-        from_=study_path,
-        project_id=project_id,
         auth=auth,
-        bucket_name=bucket_name,
-        metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
-        user=user,
-        object_name=object_name,
-        ignore_state=False,
-        workdir=".g3t/work")
+        project_id=project_id,
+        object_name=object_name)
 
     output['logs'].append(cp_result['msg'])
     object_id = cp_result['object_id']
