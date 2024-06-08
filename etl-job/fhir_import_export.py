@@ -337,6 +337,7 @@ def _get(output: list[str],
         config=config,
         auth=auth,
         project_id=project_id,
+        from_=study_path,
         object_name=object_name)
 
     output['logs'].append(cp_result['msg'])
