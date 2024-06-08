@@ -344,7 +344,8 @@ def _get(output: list[str],
         metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
         user=user,
         object_name=object_name,
-        ignore_state=False)
+        ignore_state=False,
+        workdir=".g3t/work")
 
     output['logs'].append(cp_result['msg'])
     object_id = cp_result['object_id']
