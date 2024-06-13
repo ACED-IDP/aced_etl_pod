@@ -284,6 +284,7 @@ def _load_all(study: str,
         print("EXCEPTION: ", str(e))
         output['logs'].append(f"An ElasticSearch Exception occurred: {str(e)}")
         tb = traceback.format_exc()
+        print("TRACEBACK: ", tb)
         if logs is not None:
             output['logs'].extend(logs)
             output['logs'].append(tb)
