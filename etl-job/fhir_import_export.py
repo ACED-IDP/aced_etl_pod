@@ -13,9 +13,10 @@ from aced_submission.fhir_store import fhir_get, fhir_put, fhir_delete
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
 from aced_submission.meta_graph_load import meta_upload, empty_project
-from aced_submission.meta_discovery_load import discovery_load, discovery_delete, discovery_get
-from elasticsearch import Elasticsearch
-from elasticsearch.exceptions import ElasticsearchException
+from aced_submission.meta_discovery_load import discovery_load,\
+    discovery_delete, discovery_get
+from opensearchpy import OpenSearch as Elasticsearch
+from elasticsearch import OpenSearchException
 from gen3.auth import Gen3Auth
 from gen3.file import Gen3File
 from gen3_tracker.config import Config
@@ -210,16 +211,14 @@ def _load_all(study: str,
         file_path = pathlib.Path(file_path)
         extraction_path = file_path / 'extractions'
         research_study = str(extraction_path / 'ResearchStudy.ndjson')
-        observation_path = str(extraction_path / 'Observation.ndjson')
-        document_reference_path = str(extraction_path / 'DocumentReference.ndjson')
 
         file_path = str(file_path)
         extraction_path = str(extraction_path)
         output['logs'].append(f"Simplifying study: {file_path}")
         simplify_directory(file_path, pattern="**/*.*",
-                    output_path=extraction_path,
-                    schema_path=schema, dialect='PFB',
-                    config_path='config.yaml')  # Don't want to add this Iceberg pr right now split_obs=False
+                           output_path=extraction_path,
+                           schema_path=schema, dialect='PFB',
+                           config_path='config.yaml')  # Don't want to add this Iceberg pr right now split_obs=False
 
         meta_upload(source_path=extraction_path,
                     program=program, project=project,
@@ -280,7 +279,7 @@ def _load_all(study: str,
                         elastic_url=DEFAULT_ELASTIC)
         yaml.dump(logs, sys.stdout, default_flow_style=False)
 
-    except ElasticsearchException as e:
+    except OpenSearchException as e:
         print("EXCEPTION: ", str(e))
         output['logs'].append(f"An ElasticSearch Exception occurred: {str(e)}")
         tb = traceback.format_exc()
