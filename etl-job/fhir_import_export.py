@@ -16,7 +16,7 @@ from aced_submission.meta_graph_load import meta_upload, empty_project
 from aced_submission.meta_discovery_load import discovery_load,\
     discovery_delete, discovery_get
 from opensearchpy import OpenSearch as Elasticsearch
-from elasticsearch import OpenSearchException
+from opensearchpy import OpenSearchException
 from gen3.auth import Gen3Auth
 from gen3.file import Gen3File
 from gen3_tracker.config import Config
