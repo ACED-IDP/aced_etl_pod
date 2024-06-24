@@ -44,9 +44,9 @@ COPY ./requirements.txt /root
 RUN source venv/bin/activate && pip install -r requirements.txt
 
 # move these out of requirements.txt, so that builds are quicker when we change
-RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.8rc3"
-RUN source venv/bin/activate && pip install "gen3_tracker>=0.0.4rc26"
-RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc18"
+RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.q8rc3"
+RUN source venv/bin/activate && pip install "gen3_tracker>=0.0.4rc38"
+RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc21"
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
@@ -59,8 +59,8 @@ RUN ls -l /root
 # TODO - should this belong in etl pod repo / helm?
 RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/development/config.yaml -o config.yaml
 RUN chmod +x /root/add-ucl-to-ca-certs.sh
-RUN /root/add-ucl-to-ca-certs.sh
-ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+#RUN /root/add-ucl-to-ca-certs.sh
+#ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 ENTRYPOINT [ "/root/entrypoint.sh" ]
 CMD [ "python", "fhir_import_export.py" ]
