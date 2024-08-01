@@ -13,7 +13,7 @@ import yaml
 from aced_submission.fhir_store import fhir_get, fhir_put, fhir_delete
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
-from aced_submission.meta_graph_load import meta_upload, empty_project
+from aced_submission.meta_graph_load import empty_project
 from aced_submission.meta_discovery_load import discovery_load,\
     discovery_delete, discovery_get
 from opensearchpy import OpenSearch as Elasticsearch
@@ -266,7 +266,7 @@ def _load_all(study: str,
         output['logs'].append(f"Simplifying study: {file_path}")
 
         subprocess.run(["jsonschemagraph", "gen-dir", "iceberg/schemas/graph", f"{file_path}", f"{extraction_path}", "--gzip_files"])
-        load_grip("SMMART", "META/extractions", output, _get_token())
+        load_grip("GEN3", extraction_path, output, _get_token())
 
         assert pathlib.Path(work_path).exists(), f"Directory {work_path} does not exist."
         work_path = pathlib.Path(work_path)
