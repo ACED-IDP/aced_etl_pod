@@ -18,12 +18,20 @@ RUN apt-get -y --no-install-recommends install  \
            vim \
            automake \
            libtool \
+	   wget \
            ca-certificates
 
 RUN rm -rf /var/lib/apt/lists/*
 
-# set the working directory in the container
+ENV GOPATH=/go
+ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
+RUN wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz && \ 
+	tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz && \ 
+	rm go1.22.5.linux-amd64.tar.gz
 
+RUN mkdir -p $GOPATH/src $GOPATH/bin
+
+# set the working directory in the container
 WORKDIR /root
 
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
@@ -47,6 +55,16 @@ RUN source venv/bin/activate && pip install -r requirements.txt
 RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.q8rc3"
 RUN source venv/bin/activate && pip install "gen3_tracker>=0.0.4rc41"
 RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc25"
+ENV GOPROXY=direct
+RUN git clone https://github.com/bmeg/jsonschemagraph.git && \
+	cd jsonschemagraph && \
+	git checkout fix/duplicate-edges && \
+	go build . && \
+	go install .
+    
+RUN git clone https://github.com/bmeg/iceberg.git && \
+	cd iceberg && \
+	git checkout feature/FHIR-resource-type
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
@@ -58,8 +76,6 @@ RUN ls -l /root
 
 # TODO - should this belong in etl pod repo / helm?
 RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/development/config.yaml -o config.yaml
-RUN chmod +x /root/add-ucl-to-ca-certs.sh
-#RUN /root/add-ucl-to-ca-certs.sh
 #ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 ENTRYPOINT [ "/root/entrypoint.sh" ]

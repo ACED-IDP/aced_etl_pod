@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+import requests
 from datetime import datetime
 
 import yaml
@@ -49,6 +50,54 @@ def _user(auth: Gen3Auth) -> dict:
     return auth.curl('/user/user').json()
 
 
+def load_grip(graph_name, directory_path, output, access_token):
+    """Loads a directory of .ndjson or .gz files to GRIP. TODO: implement schema in grip"""
+    # List graphs and check to see if graph name is amoung the graphs listed
+    response = requests.get("http://local-grip:8201/graphql/list-graphs",
+                        headers= {"Authorization": f"bearer {access_token}"})
+
+    response.raise_for_status()
+    response_json = response.json()
+    assert graph_name in response_json["data"]["graphs"], "ERROR, graph not found in GRIP"
+    output["logs"].append(response)
+    #print("RESPONSE: ", response)
+
+    output["logs"].append(f"loading files into {graph_name} from {directory_path}")
+    print(f"loading files into {graph_name} from {directory_path}")
+    assert os.path.isdir(directory_path), f"directory path {directory_path} is not a directory"
+
+    for file in [f for f in os.listdir(directory_path) if any([f.endswith(".json"), f.endswith(".gz"), f.endswith(".ndjson")])]:
+        print("FILE: ", file)
+        try:
+            file_path = f"{directory_path}/{file}"
+            output["logs"].append(f"loading file: {file_path}")
+            graph_component = "edge" if "edge" in file_path else "vertex"
+            with open(file_path, 'rb') as file:
+                files = {'file': (file_path, file)}
+                response = requests.post(
+                    f"http://local-grip:8201/graphql/{graph_name}/bulk-load",
+                    data = {
+                        "types" : graph_component,
+                    },
+                    headers = {"Authorization": f"bearer {access_token}"},
+                    files = files
+                )
+
+            response.raise_for_status()
+            json_data = response.json()
+            output["logs"].append(f"json data: {json_data}")
+            print(json_data)
+
+        except requests.exceptions.HTTPError as http_err:
+            print(f"HTTP error occurred: {http_err}")
+            output["logs"].append(f"HTTP error occurred: {http_err}")
+            return False
+        except Exception as err:
+            print(f"An error occurred: {str(err)}")
+            output["logs"].append(f"An error occurred: {str(err)}")
+            return False
+        return True
+
 def _input_data() -> dict:
     """Get input data"""
     assert 'INPUT_DATA' in os.environ, "INPUT_DATA not found in environment"
@@ -62,7 +111,7 @@ def _get_program_project(input_data: dict) -> tuple:
     return input_data['project_id'].split('-')
 
 
-def _can_create(output: list[str],
+def _can_create(output: dict,
                 program: str,
                 project: str,
                 user: dict) -> bool:
@@ -105,7 +154,7 @@ def _can_create(output: list[str],
     return can_create
 
 
-def _can_read(output: list[str],
+def _can_read(output: dict,
               program: str,
               project: str,
               user: dict) -> bool:
@@ -150,7 +199,7 @@ def _can_read(output: list[str],
 
 def _download_and_unzip(object_id: str,
                         file_path: str,
-                        output: list[str],
+                        output: dict,
                         file_name: str) -> bool:
     """Download and unzip object_id to downloads/{file_path}"""
     try:
@@ -185,7 +234,7 @@ def _download_and_unzip(object_id: str,
 
 def _load_all(study: str,
               project_id: str,
-              output: list[str],
+              output: dict,
               file_path: str,
               schema: str,
               work_path: str) -> bool:
@@ -215,14 +264,9 @@ def _load_all(study: str,
         file_path = str(file_path)
         extraction_path = str(extraction_path)
         output['logs'].append(f"Simplifying study: {file_path}")
-        simplify_directory(file_path, pattern="**/*.*",
-                           output_path=extraction_path,
-                           schema_path=schema, dialect='PFB',
-                           config_path='config.yaml')  # Don't want to add this Iceberg pr right now split_obs=False
 
-        meta_upload(source_path=extraction_path,
-                    program=program, project=project,
-                    silent=False, dictionary_path=schema, config_path=config)
+        subprocess.run(["jsonschemagraph", "gen-dir", "iceberg/schemas/graph", f"{file_path}", f"{extraction_path}", "--gzip_files"])
+        load_grip("SMMART", "META/extractions", output, _get_token())
 
         assert pathlib.Path(work_path).exists(), f"Directory {work_path} does not exist."
         work_path = pathlib.Path(work_path)
@@ -304,7 +348,7 @@ def _load_all(study: str,
     return True
 
 
-def _get(output: list[str],
+def _get(output: dict,
          program: str,
          project: str,
          user: dict,
@@ -346,7 +390,7 @@ def _get(output: list[str],
     return object_id
 
 
-def _empty_project(output: list[str],
+def _empty_project(output: dict,
                    program: str,
                    project: str,
                    user: dict,
@@ -423,7 +467,7 @@ def main():
 
 
 def _put(input_data: dict,
-         output: list[str],
+         output: dict,
          program: str,
          project: str,
          user: dict,
