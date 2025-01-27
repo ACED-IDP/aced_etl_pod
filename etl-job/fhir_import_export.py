@@ -207,6 +207,7 @@ def _load_all(program: str,
             'specimen': db.flattened_specimens,
             'file': db.flattened_document_references,
             "medicationadministration": db.flattened_medication_administrations,
+            "groupmember": db.flattened_group_members,
         }
 
         # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
