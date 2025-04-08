@@ -191,6 +191,8 @@ def _load_all(program: str,
                 # output dictionary is capturing logs from this function
                 status = bulk_load_raw(_get_grip_service(), "CALIPER",
                     f"{program}-{project}", str(file), output, _get_token())
+                output["logs"].append(status)
+                print(status)
                 if status["status"] != 200:
                     raise Exception(f"Critical Error load of file {file} returned non 200 status {status['status']}")
 
@@ -198,6 +200,9 @@ def _load_all(program: str,
         work_path = pathlib.Path(work_path)
         db_path = (work_path / "local_fhir.db")
         db_path.unlink(missing_ok=True)
+
+        print("loading sqlite db...")
+        output["logs"].append("loading sqlite db...")
 
         db = LocalFHIRDatabase(db_name=db_path)
         db.bulk_insert_data(resources=get_project_data(_get_grip_service(), "CALIPER", f"{program}-{project}", output, _get_token()))
