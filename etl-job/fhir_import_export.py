@@ -215,6 +215,9 @@ def _load_all(program: str,
             "groupmember": db.flattened_group_members,
         }
 
+        print("loading opensearch...")
+        output["logs"].append("loading opensearch...")
+
         # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
         for index in index_generator_dict.keys():
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
