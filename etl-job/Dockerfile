@@ -32,7 +32,7 @@ RUN source venv/bin/activate && pip install -r requirements.txt
 
 # move these out of requirements.txt, so that builds are quicker when we change
 RUN source venv/bin/activate && pip install "gen3_tracker==0.0.7rc13"
-RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc10"
+RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc11"
 ENV PATH="/usr/local/bin:$PATH"
 
 

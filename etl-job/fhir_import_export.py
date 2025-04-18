@@ -205,7 +205,7 @@ def _load_all(program: str,
         output["logs"].append("loading sqlite db...")
 
         db = LocalFHIRDatabase(db_name=db_path)
-        db.bulk_insert_data(resources=get_project_data(_get_grip_service(), "CALIPER", f"{program}-{project}", output, _get_token()))
+        db.bulk_insert_data(resources=get_project_data(_get_grip_service(), "CALIPER", f"{program}-{project}", output, _get_token(), 1024*1024))
 
         index_generator_dict = {
             'researchsubject': db.flattened_research_subjects,
