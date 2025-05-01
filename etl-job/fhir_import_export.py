@@ -24,6 +24,11 @@ def _get_token() -> str | None:
     return os.environ.get('ACCESS_TOKEN', None)
 
 
+def _get_hostname() -> str | None:
+    """Get host name from environment"""
+    return os.environ.get('GEN3_HOSTNAME', None)
+
+
 def _auth(access_token) -> Gen3Auth:
     """Authenticate using ACCESS_TOKEN"""
     if access_token:
@@ -283,8 +288,8 @@ def _empty_project(hostname,
 def main():
     token = _get_token()
     auth = _auth(token)
-    hostname = auth.endpoint
-    print("[out] HOSTNAME: hostname")
+    hostname = "https://" + str(_get_hostname())
+    print("[out] HOSTNAME: ", hostname)
 
 
     print("[out] authorized successfully")
