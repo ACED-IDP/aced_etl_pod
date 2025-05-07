@@ -29,6 +29,11 @@ def _get_hostname() -> str | None:
     return os.environ.get('GEN3_HOSTNAME', None)
 
 
+def _get_graphName() -> str | None:
+    """Get the Grip graph name that data is to be loaded to"""
+    return os.environ.get("GRIP_GRAPH_NAME", None)
+
+
 def _auth(access_token) -> Gen3Auth:
     """Authenticate using ACCESS_TOKEN"""
     if access_token:
@@ -190,7 +195,7 @@ def _load_all(hostname,
         for file in pathlib.Path(file_path).rglob('*'):
             if file.suffix in ['.ndjson', '.json']:
                 # output dictionary is capturing logs from this function
-                status = bulk_load_raw(hostname, "CALIPER",
+                status = bulk_load_raw(hostname, _get_graphName(),
                     f"{program}-{project}", str(file), output, _get_token())
                 output["logs"].append(status)
                 print(status)
@@ -206,7 +211,7 @@ def _load_all(hostname,
         output["logs"].append("loading sqlite db...")
 
         db = LocalFHIRDatabase(db_name=db_path)
-        db.bulk_insert_data(resources=get_project_data(hostname, "CALIPER", f"{program}-{project}", output, _get_token(), 1024*1024))
+        db.bulk_insert_data(resources=get_project_data(hostname, _get_graphName(), f"{program}-{project}", output, _get_token(), 1024*1024))
 
         index_generator_dict = {
             'researchsubject': db.flattened_research_subjects,
@@ -268,7 +273,7 @@ def _empty_project(hostname,
     """Clear out graph and flat metadata for project """
     # check permissions
     try:
-        grip_delete(hostname, graph_name="CALIPER",
+        grip_delete(hostname, graph_name=_get_graphName(),
                     project_id=f"{program}-{project}",
                     output=output, access_token=_get_token())
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
