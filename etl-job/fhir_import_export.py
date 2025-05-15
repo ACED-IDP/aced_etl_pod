@@ -19,14 +19,19 @@ from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 
-def _get_grip_service() -> str | None:
-    """Get GRIP_SERVICE_NAME from environment"""
-    return os.environ.get('GRIP_SERVICE_NAME', None)
-
-
 def _get_token() -> str | None:
     """Get ACCESS_TOKEN from environment"""
     return os.environ.get('ACCESS_TOKEN', None)
+
+
+def _get_hostname() -> str | None:
+    """Get host name from environment"""
+    return os.environ.get('GEN3_HOSTNAME', None)
+
+
+def _get_graphName() -> str | None:
+    """Get the Grip graph name that data is to be loaded to"""
+    return os.environ.get("GRIP_GRAPH_NAME", None)
 
 
 def _auth(access_token) -> Gen3Auth:
@@ -178,7 +183,8 @@ def _download_and_unzip(object_id: str,
     return True
 
 
-def _load_all(program: str,
+def _load_all(hostname,
+              program: str,
               project: str,
               output: dict,
               file_path: str,
@@ -189,8 +195,10 @@ def _load_all(program: str,
         for file in pathlib.Path(file_path).rglob('*'):
             if file.suffix in ['.ndjson', '.json']:
                 # output dictionary is capturing logs from this function
-                status = bulk_load_raw(_get_grip_service(), "CALIPER",
+                status = bulk_load_raw(hostname, _get_graphName(),
                     f"{program}-{project}", str(file), output, _get_token())
+                output["logs"].append(status)
+                print(status)
                 if status["status"] != 200:
                     raise Exception(f"Critical Error load of file {file} returned non 200 status {status['status']}")
 
@@ -199,8 +207,11 @@ def _load_all(program: str,
         db_path = (work_path / "local_fhir.db")
         db_path.unlink(missing_ok=True)
 
+        print("loading sqlite db...")
+        output["logs"].append("loading sqlite db...")
+
         db = LocalFHIRDatabase(db_name=db_path)
-        db.bulk_insert_data(resources=get_project_data(_get_grip_service(), "CALIPER", f"{program}-{project}", output, _get_token()))
+        db.bulk_insert_data(resources=get_project_data(hostname, _get_graphName(), f"{program}-{project}", output, _get_token(), 1024*1024))
 
         index_generator_dict = {
             'researchsubject': db.flattened_research_subjects,
@@ -209,6 +220,9 @@ def _load_all(program: str,
             "medicationadministration": db.flattened_medication_administrations,
             "groupmember": db.flattened_group_members,
         }
+
+        print("loading opensearch...")
+        output["logs"].append("loading opensearch...")
 
         # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
         for index in index_generator_dict.keys():
@@ -250,7 +264,8 @@ def _load_all(program: str,
     return True
 
 
-def _empty_project(output: dict,
+def _empty_project(hostname,
+                   output: dict,
                    program: str,
                    project: str,
                    user: dict,
@@ -258,7 +273,7 @@ def _empty_project(output: dict,
     """Clear out graph and flat metadata for project """
     # check permissions
     try:
-        grip_delete(_get_grip_service(), graph_name="CALIPER",
+        grip_delete(hostname, graph_name=_get_graphName(),
                     project_id=f"{program}-{project}",
                     output=output, access_token=_get_token())
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
@@ -278,6 +293,9 @@ def _empty_project(output: dict,
 def main():
     token = _get_token()
     auth = _auth(token)
+    hostname = "https://" + str(_get_hostname())
+    print("[out] HOSTNAME: ", hostname)
+
 
     print("[out] authorized successfully")
     print("[out] retrieving user info...")
@@ -297,9 +315,9 @@ def main():
 
     if method.lower() == 'put':
         # read from bucket, write to fhir store
-        _put(input_data, output, program, project, user)
+        _put(hostname, input_data, output, program, project, user)
     elif method.lower() == 'delete':
-        _empty_project(output, program, project, user,
+        _empty_project(hostname, output, program, project, user,
                        config_path="config.yaml")
     else:
         raise Exception(f"unknown method {method}")
@@ -308,7 +326,8 @@ def main():
     _write_output_to_client(output)
 
 
-def _put(input_data: dict,
+def _put(hostname,
+         input_data: dict,
          output: dict,
          program: str,
          project: str,
@@ -341,7 +360,7 @@ def _put(input_data: dict,
                 output['files'].append(str(_))
 
             # load the study into the database and elastic search
-            _load_all(program, project, output, file_path, "work")
+            _load_all(hostname, program, project, output, file_path, "work")
 
         shutil.rmtree(f"/root/studies/{project}")
 
