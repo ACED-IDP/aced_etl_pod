@@ -1,42 +1,41 @@
-import os
-import logging
-import pathlib
-import sys
 import json
-import subprocess
-from datetime import datetime
-
-import click
-import yaml
+import logging
+import os
+import pathlib
 import shutil
+import subprocess
+import sys
+import traceback
 
-from elasticsearch import Elasticsearch
+from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
+from aced_submission.meta_flat_load import delete as meta_flat_delete
+from aced_submission.grip_load import bulk_load_raw, get_project_data, \
+    delete_project as grip_delete
+from opensearchpy import OpenSearchException
 from gen3.auth import Gen3Auth
-
-from aced_submission.fhir_store import fhir_get, fhir_put
-from aced_submission.meta_graph_load import meta_upload
-from aced_submission.meta_flat_load import DEFAULT_ELASTIC, denormalize_patient, load_flat
 from gen3.file import Gen3File
-
-from gen3_util.config import Config
-from gen3_util.meta.uploader import cp
-
-from pathlib import Path
-
-from iceberg_tools.data.simplifier import simplify_directory
+from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 
-def _get_token() -> str:
+def _get_token() -> str | None:
     """Get ACCESS_TOKEN from environment"""
-    # print("[out] retrieving access token...")
     return os.environ.get('ACCESS_TOKEN', None)
 
 
-def _auth(access_token: str) -> Gen3Auth:
+def _get_hostname() -> str | None:
+    """Get host name from environment"""
+    return os.environ.get('GEN3_HOSTNAME', None)
+
+
+def _get_graphName() -> str | None:
+    """Get the Grip graph name that data is to be loaded to"""
+    return os.environ.get("GRIP_GRAPH_NAME", None)
+
+
+def _auth(access_token) -> Gen3Auth:
     """Authenticate using ACCESS_TOKEN"""
-    # print("[out] authorizing...")
     if access_token:
         # use access token from environment (set by sower)
         return Gen3Auth(refresh_file=f"accesstoken:///{access_token}")
@@ -55,34 +54,30 @@ def _input_data() -> dict:
     return json.loads(os.environ['INPUT_DATA'])
 
 
-def _get_program_project(input_data) -> tuple:
+def _get_program_project(input_data: dict) -> tuple:
     """Get program and project from input_data"""
     assert 'project_id' in input_data, "project_id not found in INPUT_DATA"
     assert '-' in input_data['project_id'], 'project_id must be in the format <program>-<project>'
     return input_data['project_id'].split('-')
 
 
-def _get_object_id(input_data) -> str:
-    """Get object_id from input_data"""
-    return input_data.get('object_id', None)
-
-
-def _can_create(output, program, user) -> bool:
+def _can_create(output: dict,
+                program: str,
+                project: str,
+                user: dict) -> bool:
     """Check if user can create a project in the given program.
 
     Args:
         output: output dict the json that will be returned to the caller
         program: program Gen3 program(-project)
+        project: project Gen3 (program-)project
         user: user dict from arborist (aka profile)
     """
 
     can_create = True
 
-    if f"/programs/{program}" not in user['resources']:
-        output['logs'].append(f"/programs/{program} not found in user resources")
-        can_create = False
-
     required_resources = [
+        f"/programs/{program}",
         f"/programs/{program}/projects"
     ]
     for required_resource in required_resources:
@@ -93,33 +88,40 @@ def _can_create(output, program, user) -> bool:
             output['logs'].append(f"HAS RESOURCE {required_resource}")
 
     required_services = [
-        f"/programs/{program}/projects"
+        f"/programs/{program}/projects/{project}"
     ]
     for required_service in required_services:
         if required_service not in user['authz']:
             output['logs'].append(f"{required_service} not found in user authz")
             can_create = False
+        else:
+            if {'method': 'create', 'service': '*'} not in user['authz'][required_service]:
+                output['logs'].append(f"create not found in user authz for {required_service}")
+                can_create = False
+            else:
+                output['logs'].append(f"HAS SERVICE create on resource {required_service}")
 
     return can_create
 
 
-def _can_read(output, program, project, user) -> bool:
+def _can_read(output: dict,
+              program: str,
+              project: str,
+              user: dict) -> bool:
     """Check if user can read a project in the given program.
 
     Args:
         output: output dict the json that will be returned to the caller
         program: program Gen3 program(-project)
+        project: project Gen3 (program-)project
         user: user dict from arborist (aka profile)
     """
 
     can_read = True
 
-    if f"/programs/{program}" not in user['resources']:
-        output['logs'].append(f"/programs/{program} not found in user resources")
-        can_read = False
-
     required_resources = [
-        f"/programs/{program}/projects/{project}"
+        f"/programs/{program}",
+        f"/programs/{program}/projects"
     ]
     for required_resource in required_resources:
         if required_resource not in user['resources']:
@@ -145,7 +147,10 @@ def _can_read(output, program, project, user) -> bool:
     return can_read
 
 
-def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
+def _download_and_unzip(object_id: str,
+                        file_path: str,
+                        output: dict,
+                        file_name: str) -> bool:
     """Download and unzip object_id to downloads/{file_path}"""
     try:
         token = _get_token()
@@ -154,10 +159,11 @@ def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
         full_download_path = (pathlib.Path('downloads') / file_name)
         full_download_path_parent = full_download_path.parent
         full_download_path_parent.mkdir(parents=True, exist_ok=True)
-        file_client.download_single(object_id, 'downloads' )
+        file_client.download_single(object_id, 'downloads')
     except Exception as e:
         output['logs'].append(f"An Exception Occurred: {str(e)}")
         output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
+        _write_output_to_client(output)
         raise e
         return False
 
@@ -177,182 +183,165 @@ def _download_and_unzip(object_id, file_path, output, file_name) -> bool:
     return True
 
 
-def _load_all(study, project_id, output, file_path) -> bool:
-    config = "/root/config.yaml"
-    if not os.path.isfile(config):
-        output['logs'].append("config file does not exist")
-        return False
-
-    if study is None or study == "":
-        output['logs'].append("Please provide a study name")
-        return False
-
-    if project_id is None or project_id == "":
-        output['logs'].append("Please provide a project_id (program-project)")
-        return False
-
-    schema = 'https://aced-public.s3.us-west-2.amazonaws.com/aced.json'
+def _load_all(hostname,
+              program: str,
+              project: str,
+              output: dict,
+              file_path: str,
+              work_path: str) -> bool:
 
     logs = None
-
     try:
-        program, project = project_id.split('-')
-        assert program, output['logs'].append("program is required")
-        assert project, output['logs'].append("project is required")
+        for file in pathlib.Path(file_path).rglob('*'):
+            if file.suffix in ['.ndjson', '.json']:
+                # output dictionary is capturing logs from this function
+                status = bulk_load_raw(hostname, _get_graphName(),
+                    f"{program}-{project}", str(file), output, _get_token())
+                output["logs"].append(status)
+                print(status)
+                if status["status"] != 200:
+                    raise Exception(f"Critical Error load of file {file} returned non 200 status {status['status']}")
 
-        file_path = pathlib.Path(file_path)
-        extraction_path = file_path / 'extractions'
-        research_study = str(extraction_path / 'ResearchStudy.ndjson')
-        patient_path = str(extraction_path / 'Patient.ndjson')
-        observation_path = str(extraction_path / 'Observation.ndjson')
-        document_reference_path = str(extraction_path / 'DocumentReference.ndjson')
+        assert pathlib.Path(work_path).exists(), f"Directory {work_path} does not exist."
+        work_path = pathlib.Path(work_path)
+        db_path = (work_path / "local_fhir.db")
+        db_path.unlink(missing_ok=True)
 
-        file_path = str(file_path)
-        extraction_path = str(extraction_path)
+        print("loading sqlite db...")
+        output["logs"].append("loading sqlite db...")
 
-        if not os.path.isfile(research_study):
-            output['logs'].append("Study not Simplified. Simplifying Study...")
-            simplify_directory(file_path, pattern="**/*.*",
-                               output_path=extraction_path,
-                               schema_path=schema, dialect='PFB',
-                               config_path='config.yaml')
+        db = LocalFHIRDatabase(db_name=db_path)
+        db.bulk_insert_data(resources=get_project_data(hostname, _get_graphName(), f"{program}-{project}", output, _get_token(), 1024*1024))
 
-        meta_upload(source_path=extraction_path,
-                    program=program, project=project,
-                    credentials_file="/root/.gen3/credentials.json",  # TODO - is this used?
-                    silent=False, dictionary_path=schema, config_path=config)
+        index_generator_dict = {
+            'researchsubject': db.flattened_research_subjects,
+            'specimen': db.flattened_specimens,
+            'file': db.flattened_document_references,
+            "medicationadministration": db.flattened_medication_administrations,
+            "groupmember": db.flattened_group_members,
+        }
 
-        if os.path.isfile(patient_path):
-            denormalize_patient(patient_path)
-            load_flat(project_id=project_id, index="patient",
-                      path=patient_path, limit=None,
-                      elastic_url=DEFAULT_ELASTIC,
-                      schema_path=schema, output_path=None)
-        else:
-            load_flat(project_id=project_id, index="patient",
-                      path='/dev/null', limit=None,
-                      elastic_url=DEFAULT_ELASTIC,
-                      schema_path=schema, output_path=None)
+        print("loading opensearch...")
+        output["logs"].append("loading opensearch...")
 
-        if os.path.isfile(observation_path):
-            load_flat(project_id=project_id, index="observation",
-                      path=observation_path, limit=None,
-                      elastic_url=DEFAULT_ELASTIC,
-                      schema_path=schema, output_path=None)
-        else:
-            load_flat(project_id=project_id, index="observation",
-                      path='/dev/null', limit=None,
-                      elastic_url=DEFAULT_ELASTIC,
-                      schema_path=schema, output_path=None)
+        # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
+        for index in index_generator_dict.keys():
+            meta_flat_delete(project_id=f"{program}-{project}", index=index)
 
-        if os.path.isfile(document_reference_path):
-            load_flat(project_id=project_id, index="file", path=document_reference_path,
+        for index, generator in index_generator_dict.items():
+            load_flat(project_id=f"{program}-{project}", index=index,
+                      generator=generator(),
                       limit=None, elastic_url=DEFAULT_ELASTIC,
-                      schema_path=schema, output_path=None)
-        else:
-            load_flat(project_id=project_id, index="file", path='/dev/null',
-                      limit=None, elastic_url=DEFAULT_ELASTIC,
-                      schema_path=schema, output_path=None)
+                      output_path=None)
 
-        logs = fhir_put(project_id, path=file_path,
-                        elastic_url=DEFAULT_ELASTIC)
-        yaml.dump(logs, sys.stdout, default_flow_style=False)
-
-    except Exception as e:
-        output['logs'].append(f"An Exception Occurred: {str(e)}")
-        output['logs'].append(f"LOADED {study}")
+    # when making changes to Elasticsearch
+    except OpenSearchException as e:
+        output['logs'].append(f"An ElasticSearch Exception occurred: {str(e)}")
+        tb = traceback.format_exc()
+        print("TRACEBACK: ", tb)
+        print("OpenSearchException: ", str(e))
+        output['logs'].append(tb)
         if logs is not None:
             output['logs'].extend(logs)
-        return False
+        _write_output_to_client(output)
+        raise
 
-    output['logs'].append(f"LOADED {study}")
+    # all other exceptions
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred: {str(e)}")
+        tb = traceback.format_exc()
+        print("TRACEBACK: ", tb)
+        print("Exception: ", str(e))
+        output['logs'].append(tb)
+        if logs is not None:
+            output['logs'].extend(logs)
+        _write_output_to_client(output)
+        raise
+
+    output['logs'].append(f"Loaded {program}-{project}")
     if logs is not None:
         output['logs'].extend(logs)
     return True
 
 
-def _get(input_data, output, program, project, user) -> str:
-    """Export data from the fhir store to bucket, returns object_id."""
-    can_read = _can_read(output, program, project, user)
-    if not can_read:
-        output['logs'].append(f"No read permissions on {program}-{project}")
-        return None
+def _empty_project(hostname,
+                   output: dict,
+                   program: str,
+                   project: str,
+                   user: dict,
+                   config_path: str | None = None):
+    """Clear out graph and flat metadata for project """
+    # check permissions
+    try:
+        grip_delete(hostname, graph_name=_get_graphName(),
+                    project_id=f"{program}-{project}",
+                    output=output, access_token=_get_token())
+        output['logs'].append(f"EMPTIED graph for {program}-{project}")
 
-    study_path = f"studies/{project}"
-    project_id = f"{program}-{project}"
+        for index in ["researchsubject", "specimen", "file"]:
+            meta_flat_delete(project_id=f"{program}-{project}", index=index)
+        output['logs'].append(f"EMPTIED flat for {program}-{project}")
 
-    # ensure we wait for the index to be refreshed before we query it
-    elastic = Elasticsearch([DEFAULT_ELASTIC], request_timeout=120)
-    elastic.indices.refresh(index='fhir')
-
-    logs = fhir_get(f"{program}-{project}", study_path, DEFAULT_ELASTIC)
-    output['logs'].extend(logs)
-
-    # zip and upload the exported files to bucket
-    now = datetime.now().strftime("%Y%m%d-%H%M%S")
-    object_name = f'{project_id}_{now}_SNAPSHOT.zip'
-
-    config = Config()
-    cp_result = cp(
-        config=config,
-        from_=study_path,
-        project_id=project_id,
-        metadata={'submitter': None, 'metadata_version': '0.0.1', 'is_metadata': True, 'is_snapshot': True},
-        user=user,
-        object_name=object_name,
-        ignore_state=False)
-
-    output['logs'].append(cp_result['msg'])
-    object_id = cp_result['object_id']
-
-    return object_id
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
+        tb = traceback.format_exc()
+        output['logs'].append(tb)
+        _write_output_to_client(output)
+        raise
 
 
 def main():
     token = _get_token()
     auth = _auth(token)
+    hostname = "https://" + str(_get_hostname())
+    print("[out] HOSTNAME: ", hostname)
 
-    # print("[out] authorized successfully")
 
-    # print("[out] retrieving user info...")
+    print("[out] authorized successfully")
+    print("[out] retrieving user info...")
     user = _user(auth)
 
-    output = {'user': None, 'files': [], 'logs': []}
+    output = {'user': user['email'], 'files': [], 'logs': []}
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    # print(f"[out] {json.dumps(user, separators=(',', ':'))}")
 
     # output['env'] = {k: v for k, v in os.environ.items()}
 
     input_data = _input_data()
-    print(f"[out] {json.dumps(input_data, separators=(',', ':'))}")
-
+    _write_output_to_client(input_data)
     program, project = _get_program_project(input_data)
 
     method = input_data.get("method", None)
     assert method, "input data must contain a `method`"
+
     if method.lower() == 'put':
         # read from bucket, write to fhir store
-        _put(input_data, output, program, project, user)
-        # after pushing commits, create a snapshot file
-        object_id = _get(input_data, output, program, project, user)
-        output['snapshot'] = {'object_id': object_id}
-    elif method.lower() == 'get':
-        # read fhir store, write to bucket
-        object_id = _get(input_data, output, program, project, user)
-        output['object_id'] = object_id
+        _put(hostname, input_data, output, program, project, user)
+    elif method.lower() == 'delete':
+        _empty_project(hostname, output, program, project, user,
+                       config_path="config.yaml")
     else:
         raise Exception(f"unknown method {method}")
 
     # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    print(f"[out] {json.dumps(output, separators=(',', ':'))}")
+    _write_output_to_client(output)
 
 
-def _put(input_data, output, program, project, user):
+def _put(hostname,
+         input_data: dict,
+         output: dict,
+         program: str,
+         project: str,
+         user: dict):
     """Import data from bucket to graph, flat and fhir store."""
     # check permissions
-    can_create = _can_create(output, program, user)
+    can_create = _can_create(output, program, project, user)
     output['logs'].append(f"CAN CREATE: {can_create}")
-    assert can_create, f"No create permissions on {program}"
+    if not can_create:
+        error_log = f"ERROR 401: No permissions to create project {project} on program {program}. \nYou can view your project-level permissions with g3t ping"
+        output["logs"].append(error_log)
+        _write_output_to_client(output)
+        raise Exception(error_log)
+
     assert 'push' in input_data, "input data must contain a `push`"
     for commit in input_data['push']['commits']:
         assert 'object_id' in commit, "commit must contain an `object_id`"
@@ -371,9 +360,17 @@ def _put(input_data, output, program, project, user):
                 output['files'].append(str(_))
 
             # load the study into the database and elastic search
-            _load_all(project, f"{program}-{project}", output, file_path)
+            _load_all(hostname, program, project, output, file_path, "work")
 
         shutil.rmtree(f"/root/studies/{project}")
+
+
+def _write_output_to_client(output):
+    '''
+    formats output as json to stdout so it is passed back to the client,
+    most importantly to display relevant logs from the job erroring out
+    '''
+    print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
 
 if __name__ == '__main__':

@@ -9,34 +9,21 @@ RUN apt-get -y --no-install-recommends install  \
            gcc \
            git \
            iputils-ping \
-           jq \
-           libmagic-dev \
-           libpq-dev \
-           postgresql-client \
            python3-dev \
            unzip \
            vim \
            automake \
            libtool \
-           ca-certificates
+	   wget
 
 RUN rm -rf /var/lib/apt/lists/*
 
 # set the working directory in the container
-
 WORKDIR /root
-
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-RUN unzip awscliv2.zip
-RUN ./aws/install
-RUN rm awscliv2.zip
 
 SHELL ["/bin/bash", "-c"]
 RUN python3 -m venv venv
 RUN source venv/bin/activate && pip install wheel
-RUN source venv/bin/activate && pip install yq
-
-RUN mkdir ~/.aws
 RUN mkdir ~/.gen3
 
 ENV PYTHONUNBUFFERED=1
@@ -44,26 +31,21 @@ COPY ./requirements.txt /root
 RUN source venv/bin/activate && pip install -r requirements.txt
 
 # move these out of requirements.txt, so that builds are quicker when we change
-RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.6rc1"
-RUN source venv/bin/activate && pip install "gen3_util>=0.0.14rc3"
-RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc9" --no-cache
+RUN source venv/bin/activate && pip install "gen3_tracker==0.0.7rc13"
+RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc12"
 # our fork of indexclient - adds auth to all indexd gets
 RUN source venv/bin/activate && pip install "indexclient@git+https://github.com/ohsu-comp-bio/indexclient.git@b9d02873df787bf4fb98869521fd287d39c668aa"
 
+ENV PATH="/usr/local/bin:$PATH"
+
+
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
-RUN chmod +x /root/load_all
 
 RUN mkdir /root/studies
 RUN ls -la /root
 RUN pwd
 RUN ls -l /root
-
-# TODO - should this belong in etl pod repo / helm?
-RUN curl  https://raw.githubusercontent.com/bmeg/iceberg-schema-tools/main/config.yaml -o config.yaml
-RUN chmod +x /root/add-ucl-to-ca-certs.sh
-RUN /root/add-ucl-to-ca-certs.sh
-ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 ENTRYPOINT [ "/root/entrypoint.sh" ]
 CMD [ "python", "fhir_import_export.py" ]
