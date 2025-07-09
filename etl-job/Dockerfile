@@ -47,6 +47,8 @@ RUN source venv/bin/activate && pip install -r requirements.txt
 RUN source venv/bin/activate && pip install "iceberg_tools>=0.0.6rc1"
 RUN source venv/bin/activate && pip install "gen3_util>=0.0.14rc3"
 RUN source venv/bin/activate && pip install "aced-submission==0.0.9rc9" --no-cache
+# our fork of indexclient - adds auth to all indexd gets
+RUN source venv/bin/activate && pip install "indexclient@git+https://github.com/ohsu-comp-bio/indexclient.git@b9d02873df787bf4fb98869521fd287d39c668aa"
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
