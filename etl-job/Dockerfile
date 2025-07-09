@@ -33,6 +33,9 @@ RUN source venv/bin/activate && pip install -r requirements.txt
 # move these out of requirements.txt, so that builds are quicker when we change
 RUN source venv/bin/activate && pip install "gen3_tracker==0.0.7rc13"
 RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc12"
+# our fork of indexclient - adds auth to all indexd gets
+RUN source venv/bin/activate && pip install "indexclient@git+https://github.com/ohsu-comp-bio/indexclient.git@b9d02873df787bf4fb98869521fd287d39c668aa"
+
 ENV PATH="/usr/local/bin:$PATH"
 
 
