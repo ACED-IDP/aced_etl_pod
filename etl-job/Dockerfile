@@ -32,9 +32,6 @@ ENV PYTHONUNBUFFERED=1
 ENV PATH="/usr/local/bin:$PATH"
 COPY ./requirements.txt /root/
 RUN source venv/bin/activate && pip install -r requirements.txt
-RUN source venv/bin/activate && pip install --upgrade pip
-
-
 RUN source venv/bin/activate && pip install "gen3_tracker==0.0.7rc19" 
 RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc13"
 

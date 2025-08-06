@@ -3,9 +3,9 @@ import logging
 import os
 import pathlib
 import shutil
-import subprocess
 import sys
 import traceback
+import subprocess
 
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
@@ -13,8 +13,8 @@ from aced_submission.grip_load import bulk_load_raw, get_project_data, \
     delete_project as grip_delete
 from opensearchpy import OpenSearchException
 from gen3.auth import Gen3Auth
-from gen3.file import Gen3File
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
+from typing import List, Dict, Any
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
@@ -56,9 +56,9 @@ def _input_data() -> dict:
 
 def _get_program_project(input_data: dict) -> tuple:
     """Get program and project from input_data"""
-    assert 'project_id' in input_data, "project_id not found in INPUT_DATA"
-    assert '-' in input_data['project_id'], 'project_id must be in the format <program>-<project>'
-    return input_data['project_id'].split('-')
+    assert 'projectId' in input_data, "project_id not found in INPUT_DATA"
+    assert '-' in input_data['projectId'], 'project_id must be in the format <program>-<project>'
+    return input_data['projectId'].split('-')
 
 
 def _can_create(output: dict,
@@ -147,40 +147,53 @@ def _can_read(output: dict,
     return can_read
 
 
-def _download_and_unzip(object_id: str,
+def _download_and_unzip(username: str,
+                        gh_token: str,
                         file_path: str,
-                        output: dict,
-                        file_name: str) -> bool:
-    """Download and unzip object_id to downloads/{file_path}"""
+                        repo_url: str,
+                        bucket: str,
+                        profile: str,
+                        api_endpoint: str,
+                        project: str,
+                        output: Dict[str, Any],
+                        dest_dir: pathlib.Path) -> bool | None:
+    """
+    Download and unzip an object from Git LFS to a destination directory.
+    """
     try:
+        repo_name = pathlib.Path(repo_url).stem
+        target_dir = os.path.join(os.getcwd(), repo_name)
+
+        # Git clone
+        clone_url = f"https://{username}:{gh_token}@{repo_url}"
+        logging.info(f"clone URL: {clone_url}")
+        if not _run_subprocess(["git", "clone", clone_url], os.getcwd(), output, f"ERROR CLONING {repo_url}"):
+            return False
+
+        # Git LFS init
         token = _get_token()
-        auth = _auth(token)
-        file_client = Gen3File(auth)
-        full_download_path = (pathlib.Path('downloads') / file_name)
-        full_download_path_parent = full_download_path.parent
-        full_download_path_parent.mkdir(parents=True, exist_ok=True)
-        file_client.download_single(object_id, 'downloads')
+        init_cmd = ["git-drs", "init", "--bucket", bucket, "--token", token, "--profile", profile, "--project", project, "--url", api_endpoint]
+        if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING GIT-DRS for {repo_url}"):
+            return False
+
+        # Git LFS pull
+        pull_cmd = ["git-lfs", "pull", "-I", file_path]
+        if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file_path}"):
+            return False
+
+        output['logs'].append(f"DOWNLOADED {file_path}")
+
+        # Unzip the file
+        unzip_cmd = ["unzip", "-o", "-j", os.path.join(target_dir, file_path), "-d", str(dest_dir)]
+        if not _run_subprocess(unzip_cmd, target_dir, output, f"ERROR UNZIPPING {file_path}"):
+            return False
+
+        output['logs'].append(f"UNZIPPED {dest_dir}")
+        return True
+
     except Exception as e:
-        output['logs'].append(f"An Exception Occurred: {str(e)}")
-        output['logs'].append(f"ERROR DOWNLOADING {object_id} {file_path}")
-        _write_output_to_client(output)
-        raise e
-        return False
+        _handle_error(output, f"An unexpected error occurred in _download_and_unzip: {e}", Exception)
 
-    output['logs'].append(f"DOWNLOADED {object_id} {file_path}")
-
-    cmd = f"unzip -o -j {full_download_path} -d {file_path}".split()
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        output['logs'].append(f"ERROR UNZIPPING /tmp/{object_id}")
-        if result.stderr:
-            output['logs'].append(result.stderr.read().decode())
-        if result.stdout:
-            output['logs'].append(result.stdout.read().decode())
-        return False
-
-    output['logs'].append(f"UNZIPPED {file_path}")
-    return True
 
 
 def _load_all(hostname,
@@ -264,6 +277,38 @@ def _load_all(hostname,
     return True
 
 
+def _run_subprocess(cmd: List[str], cwd: str, output: Dict[str, Any], descriptive_error: str) -> bool:
+    """Helper function to run subprocess commands and handle errors with detailed messages."""
+    try:
+        # Use subprocess.run with check=True and capture_output=True
+        # This will automatically raise a CalledProcessError on non-zero exit codes.
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True  # Decodes stdout and stderr as strings
+        )
+        logging.info(f"Successfully ran command: {' '.join(cmd)}")
+        if result.stdout:
+            logging.debug(f"STDOUT: {result.stdout.strip()}")
+            output['logs'].append(f"STDOUT: {result.stdout.strip()}")
+        return True
+    except subprocess.CalledProcessError as e:
+        # The key improvement: include the stderr from the failed command.
+        detailed_error_msg = f"{descriptive_error}. Command failed with return code {e.returncode}."
+        if e.stderr:
+            detailed_error_msg += f"\nGit Error Details:\n{e.stderr.strip()}"
+
+        # Raise a custom exception or a more informative one
+        _handle_error(output, detailed_error_msg, subprocess.CalledProcessError)
+        return False
+    except FileNotFoundError:
+        _handle_error(output, f"Command not found: {cmd[0]}", FileNotFoundError)
+    except Exception as e:
+        _handle_error(output, f"An unexpected error occurred: {e}", Exception)
+
+
 def _empty_project(hostname,
                    output: dict,
                    program: str,
@@ -326,43 +371,81 @@ def main():
     _write_output_to_client(output)
 
 
-def _put(hostname,
-         input_data: dict,
-         output: dict,
+def _put(hostname: str,
+         input_data: Dict[str, Any],
+         output: Dict[str, Any],
          program: str,
          project: str,
-         user: dict):
-    """Import data from bucket to graph, flat and fhir store."""
-    # check permissions
-    can_create = _can_create(output, program, project, user)
-    output['logs'].append(f"CAN CREATE: {can_create}")
-    if not can_create:
-        error_log = f"ERROR 401: No permissions to create project {project} on program {program}. \nYou can view your project-level permissions with g3t ping"
-        output["logs"].append(error_log)
-        _write_output_to_client(output)
-        raise Exception(error_log)
+         user: Dict[str, Any]):
+    """
+    Import data from a bucket to the graph, flat, and fhir stores.
 
-    assert 'push' in input_data, "input data must contain a `push`"
-    for commit in input_data['push']['commits']:
-        assert 'object_id' in commit, "commit must contain an `object_id`"
-        object_id = commit['object_id']
-        assert object_id, "object_id must not be empty"
-        assert 'commit_id' in commit, "commit must contain a `commit_id`"
-        commit_id = commit['commit_id']
-        assert commit_id, "commit_id must not be empty"
-        file_path = f"/root/studies/{project}/commits/{commit_id}"
-        pathlib.Path(file_path).mkdir(parents=True, exist_ok=True)
-        # get the meta data file
-        if _download_and_unzip(object_id, file_path, output, commit['meta_path']):
+    Args:
+        hostname (str): The hostname for the API endpoint.
+        input_data (Dict[str, Any]): The input data containing user and file information.
+        output (Dict[str, Any]): A dictionary to store logs and output files.
+        program (str): The program name.
+        project (str): The project name.
+        user (Dict[str, Any]): The user information.
+    """
+    try:
+        # Check permissions and handle early exit
+        if not _can_create(output, program, project, user):
+            error_msg = (f"ERROR 401: No permissions to create project {project} on program {program}. "
+                         "You can view your project-level permissions with g3t ping")
+            _handle_error(output, error_msg, Exception)
 
-            # tell user what files were found
-            for _ in pathlib.Path(file_path).glob('*'):
-                output['files'].append(str(_))
+        # Use a separate function to validate and extract input data
+        validated_data = _validate_and_extract_input(input_data)
 
-            # load the study into the database and elastic search
-            _load_all(hostname, program, project, output, file_path, "work")
+        # Use descriptive variable names
+        username = validated_data['ghUserName']
+        gh_token = validated_data['ghToken']
+        bucket_name = validated_data['bucketName']
+        profile = validated_data['profile']
+        api_endpoint = validated_data['APIEndpoint']
 
-        shutil.rmtree(f"/root/studies/{project}")
+        # Extract commit details
+        commit = validated_data['push']['commits'][-1]
+        file_path = commit['filePath']
+        repo_url = commit['repoUrl']
+
+        # Define paths
+        unzip_path = pathlib.Path(f"/root/repo/{project}/snapshot")
+        unzip_path.mkdir(parents=True, exist_ok=True)
+        repo_path = pathlib.Path(f"/root/repo/{project}")
+
+        # Download and unzip the data
+        success = _download_and_unzip(
+            username=username,
+            gh_token=gh_token,
+            file_path=file_path,
+            repo_url=repo_url,
+            bucket=bucket_name,
+            profile=profile,
+            api_endpoint=api_endpoint,
+            project=f"{program}-{project}",
+            output=output,
+            dest_dir=unzip_path
+        )
+
+        if success:
+            # Log files found
+            found_files = [str(p) for p in unzip_path.glob('*')]
+            output['files'].extend(found_files)
+            logging.info(f"Found files: {found_files}")
+
+            # Load the data
+            _load_all(hostname, program, project, output, unzip_path, "work")
+
+        # Clean up the repository directory
+        if repo_path.exists():
+            shutil.rmtree(repo_path)
+            logging.info(f"Cleaned up directory: {repo_path}")
+
+    except Exception as e:
+        _handle_error(output, f"An unexpected error occurred in _put: {e}", Exception)
+
 
 
 def _write_output_to_client(output):
@@ -372,6 +455,43 @@ def _write_output_to_client(output):
     '''
     print(f"[out] {json.dumps(output, separators=(',', ':'))}")
 
+
+def _handle_error(output: Dict[str, Any], message: str, exception_type: type = Exception):
+    """A helper function to log errors, update output, and raise an exception."""
+    logging.error(message)
+    output['logs'].append(message)
+    _write_output_to_client(output)
+    raise exception_type(message)
+
+def _validate_and_extract_input(input_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and extract required fields from the input_data dictionary."""
+    required_fields = {
+        'ghUserName': "input data must contain a `ghUserName`",
+        'ghToken': "input data must contain a `ghToken`",
+        'bucketName': "input data must contain a `bucketName`",
+        'profile': "input data must contain a `profile`",
+        'APIEndpoint': "input data must contain a `APIEndpoint`",
+        'push': "input data must contain a `push`"
+    }
+
+    for field, error_msg in required_fields.items():
+        if field not in input_data or not input_data[field]:
+            raise ValueError(error_msg)
+
+    # Validate nested commit data
+    if 'commits' not in input_data['push'] or not input_data['push']['commits']:
+        raise ValueError("`push` data must contain `commits`")
+
+    commit = input_data['push']['commits'][-1]
+    commit_fields = {
+        'filePath': "commit must contain a `filePath`",
+        'repoUrl': "commit must contain a `repoUrl`"
+    }
+
+    for field, error_msg in commit_fields.items():
+        if field not in commit or not commit[field]:
+            raise ValueError(error_msg)
+    return input_data
 
 if __name__ == '__main__':
     main()
