@@ -104,11 +104,342 @@ def _can_create(output: dict,
     return can_create
 
 
+def _download_and_unzip(gh_username: str,
+                        gh_token: str,
+                        gh_repo_url: str,
+                        gh_commit_hash: str,
+                        files: List[Dict],
+                        bucket: str,
+                        profile: str,
+                        api_endpoint: str,
+                        project_id: str,
+                        output: Dict[str, Any],
+                        dest_dir: pathlib.Path) -> bool | None:
+    """
+    Download and unzip META objects from Git LFS to a destination directory for loading.
+    """
+    try:
+        repo_name = pathlib.Path(gh_repo_url).stem
+        target_dir = os.path.join(os.getcwd(), repo_name)
+
+        clone_url = f"https://{gh_username}:{gh_token}@{gh_repo_url}"
+        if not _run_subprocess(["git", "clone", clone_url], os.getcwd(), output, f"ERROR CLONING {gh_repo_url}"):
+            return False
+
+        checkout_cmd = ["git", "checkout", gh_commit_hash]
+        if not _run_subprocess(checkout_cmd, target_dir, output, f"ERROR CHECKING OUT for {gh_repo_url} ON HASH {gh_commit_hash}"):
+            return False
+
+        init_cmd = ["git-drs", "init", "--bucket", bucket, "--token", _get_token(), "--profile", profile, "--project", project_id, "--url", api_endpoint]
+        if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING GIT-DRS for {gh_repo_url}"):
+            return False
+
+        for file in files:
+            pull_cmd = ["git-lfs", "pull", "-I", file["filePath"]]
+            if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file['filePath']}"):
+                return False
+            output['logs'].append(f"DOWNLOADED {file['filePath']}")
+
+            mv_cmd = ["mv", os.path.join(target_dir, file["filePath"]), str(dest_dir)]
+            if not _run_subprocess(mv_cmd, target_dir, output, f"ERROR MOVING {file['filePath']}"):
+                return False
+
+        return True
+
+    except Exception as e:
+        _handle_error(output, f"An unexpected error occurred in _download_and_unzip: {e}", Exception)
+
+
+def _load_all(hostname,
+              program: str,
+              project: str,
+              output: dict,
+              file_path: pathlib.Path,
+              work_path: str) -> bool:
+
+    logs = None
+    try:
+        # Since loading directly from snapshot add a grip delete to flush the project
+        grip_delete(hostname, graph_name=_get_graphName(),
+                              project_id=f"{program}-{project}",
+                              output=output, access_token=_get_token())
+
+        for file in file_path.rglob('*'):
+            if file.suffix in ['.ndjson', '.json']:
+                # output dictionary is capturing logs from this function
+                status = bulk_load_raw(hostname, _get_graphName(),
+                    f"{program}-{project}", str(file), output, _get_token())
+                output["logs"].append(status)
+                logging.info(f"bulk_load_raw return status {status}")
+                if status["status"] != 200:
+                    raise Exception(f"Critical Error load of file {file} returned non 200 status {status['status']}")
+
+        assert pathlib.Path(work_path).exists(), f"Directory {work_path} does not exist."
+        work_path = pathlib.Path(work_path)
+        db_path = (work_path / "local_fhir.db")
+        db_path.unlink(missing_ok=True)
+
+        logging.info("loading sqlite db...")
+        output["logs"].append("loading sqlite db...")
+
+        db = LocalFHIRDatabase(db_name=db_path)
+        db.bulk_insert_data(resources=get_project_data(hostname, _get_graphName(), f"{program}-{project}", output, _get_token(), 1024*1024))
+
+        index_generator_dict = {
+            'researchsubject': db.flattened_research_subjects,
+            'specimen': db.flattened_specimens,
+            'file': db.flattened_document_references,
+            "medicationadministration": db.flattened_medication_administrations,
+            "groupmember": db.flattened_group_members,
+        }
+
+        logging.info("loading opensearch...")
+        output["logs"].append("loading opensearch...")
+
+        # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
+        for index in index_generator_dict.keys():
+            meta_flat_delete(project_id=f"{program}-{project}", index=index)
+
+        for index, generator in index_generator_dict.items():
+            load_flat(project_id=f"{program}-{project}", index=index,
+                      generator=generator(),
+                      limit=None, elastic_url=DEFAULT_ELASTIC,
+                      output_path=None)
+
+    # when making changes to Elasticsearch
+    except OpenSearchException as e:
+        output['logs'].append(f"An ElasticSearch Exception occurred: {str(e)}")
+        tb = traceback.format_exc()
+        logging.info(f"Exception TRACEBACK: {tb}")
+        logging.info(f"OpenSearchException: {str(e)}")
+        output['logs'].append(tb)
+        if logs is not None:
+            output['logs'].extend(logs)
+        _write_output_to_client(output)
+        raise
+
+    # all other exceptions
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred: {str(e)}")
+        tb = traceback.format_exc()
+        logging.info(f"Exception TRACEBACK: {tb}")
+        logging.info(f"OpenSearchException: {str(e)}")
+        output['logs'].append(tb)
+        if logs is not None:
+            output['logs'].extend(logs)
+        _write_output_to_client(output)
+        raise
+
+    output['logs'].append(f"Loaded {program}-{project}")
+    if logs is not None:
+        output['logs'].extend(logs)
+    return True
+
+def _empty_project(hostname,
+                   output: dict,
+                   program: str,
+                   project: str):
+    """Clear out graph and flat metadata for project """
+    # check permissions
+    try:
+        grip_delete(hostname, graph_name=_get_graphName(),
+                    project_id=f"{program}-{project}",
+                    output=output, access_token=_get_token())
+        output['logs'].append(f"EMPTIED graph for {program}-{project}")
+
+        for index in ["researchsubject", "specimen", "file"]:
+            meta_flat_delete(project_id=f"{program}-{project}", index=index)
+        output['logs'].append(f"EMPTIED flat for {program}-{project}")
+
+    except Exception as e:
+        output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
+        tb = traceback.format_exc()
+        output['logs'].append(tb)
+        _write_output_to_client(output)
+        raise
+
+
+def main():
+    token = _get_token()
+    auth = _auth(token)
+    logging.info("[out] authorized successfully")
+
+    hostname = "https://" + str(_get_hostname())
+    logging.info(f"[out] HOSTNAME: {hostname}")
+
+    logging.info("[out] retrieving user info...")
+    user = _user(auth)
+
+    output = {'user': user['email'], 'files': [], 'logs': []}
+    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
+
+    input_data = _input_data()
+    _write_output_to_client(input_data)
+    program, project = _get_program_project(input_data)
+
+    method = input_data.get("method", None)
+    assert method, "input data must contain a `method`"
+
+    if method.lower() == 'put':
+        # read from bucket, write to fhir store
+        _put(hostname, input_data, output, program, project, user)
+    elif method.lower() == 'delete':
+        _empty_project(hostname, output, program, project)
+    else:
+        raise Exception(f"unknown method {method}")
+
+    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
+    _write_output_to_client(output)
+
+
+def _put(hostname: str,
+         input_data: Dict[str, Any],
+         output: Dict[str, Any],
+         program: str,
+         project: str,
+         user: Dict[str, Any]):
+    """
+    Import data from a bucket to the graph, flat, and fhir stores.
+
+    Args:
+        hostname (str): The hostname for the API endpoint.
+        input_data (Dict[str, Any]): The input data containing user and file information.
+        output (Dict[str, Any]): A dictionary to store logs and output files.
+        program (str): The program name.
+        project (str): The project name.
+        user (Dict[str, Any]): The user information.
+    """
+    try:
+        if not _can_create(output, program, project, user):
+            error_msg = (f"ERROR 401: No permissions to create project {project} on program {program}. "
+                         "You can view your project-level permissions with g3t ping")
+            _handle_error(output, error_msg, Exception)
+
+        validated_data = _validate_and_extract_input(input_data)
+        if len(validated_data['file']) == 0:
+            _handle_error(output, "An unexpected error occurred in _put: length of commited files is 0, nothing to return", Exception)
+
+        load_path = pathlib.Path(f"/root/repo/{project}")
+        load_path.mkdir(parents=True, exist_ok=True)
+
+        success = _download_and_unzip(
+            gh_username=validated_data['ghUserName'],
+            gh_token=validated_data['ghToken'],
+            gh_repo_url=validated_data['ghRepoUrl'],
+            gh_commit_hash=validated_data['ghCommitHash'],
+            files=validated_data['file'],
+            bucket=validated_data['bucketName'],
+            profile=validated_data['profile'],
+            api_endpoint=validated_data['APIEndpoint'],
+            project_id=f"{program}-{project}",
+            output=output,
+            dest_dir=load_path
+        )
+
+        if success:
+            found_files = [str(p) for p in load_path.glob('*')]
+            output['files'].extend(found_files)
+            logging.info(f"Found files: {found_files}")
+            _load_all(hostname, program, project, output, load_path, "work")
+
+        if load_path.exists():
+            shutil.rmtree(load_path)
+            logging.info(f"Cleaned up directory: {load_path}")
+
+    except Exception as e:
+        _handle_error(output, f"An unexpected error occurred in _put: {e}", Exception)
+
+
+def _run_subprocess(cmd: List[str], cwd: str, output: Dict[str, Any], descriptive_error: str) -> bool:
+    """Helper function to run subprocess commands and handle errors with detailed messages."""
+    try:
+        # Use subprocess.run with check=True and capture_output=True
+        # This will automatically raise a CalledProcessError on non-zero exit codes.
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True  # Decodes stdout and stderr as strings
+        )
+        logging.info(f"Successfully ran command: {' '.join(cmd)}")
+        if result.stdout:
+            logging.info(f"STDOUT: {result.stdout.strip()}")
+            output['logs'].append(f"STDOUT: {result.stdout.strip()}")
+        return True
+    except subprocess.CalledProcessError as e:
+        # The key improvement: include the stderr from the failed command.
+        detailed_error_msg = f"{descriptive_error}. Command failed with return code {e.returncode}."
+        if e.stderr:
+            detailed_error_msg += f"\nGit Error Details:\n{e.stderr.strip()}"
+
+        # Raise a custom exception or a more informative one
+        _handle_error(output, detailed_error_msg, subprocess.CalledProcessError)
+        return False
+    except FileNotFoundError:
+        _handle_error(output, f"Command not found: {cmd[0]}", FileNotFoundError)
+    except Exception as e:
+        _handle_error(output, f"An unexpected error occurred: {e}", Exception)
+
+
+def _write_output_to_client(output):
+    '''
+    formats output as json to stdout so it is passed back to the client,
+    most importantly to display relevant logs from the job erroring out
+    '''
+    logging.info(f"[out] {json.dumps(output, separators=(',', ':'))}")
+
+
+def _handle_error(output: Dict[str, Any], message: str, exception_type: type = Exception):
+    """A helper function to log errors, update output, and raise an exception."""
+    logging.error(message)
+    output['logs'].append(message)
+    _write_output_to_client(output)
+    raise exception_type(message)
+
+def _validate_and_extract_input(input_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and extract required fields from the input_data dictionary."""
+    required_fields = {
+        'ghUserName': "input data must contain a `ghUserName`",
+        'ghToken': "input data must contain a `ghToken`",
+        'ghCommitHash': "input data must contain a `ghCommitHash`",
+        'ghRepoUrl': "input data must contain a `ghRepoUrl`",
+        'bucketName': "input data must contain a `bucketName`",
+        'profile': "input data must contain a `profile`",
+        'APIEndpoint': "input data must contain a `APIEndpoint`",
+        'file': "input data must contain a `file`"
+    }
+
+    for field, error_msg in required_fields.items():
+        if field not in input_data or not input_data[field]:
+            raise ValueError(error_msg)
+
+    files = input_data['file']
+    commit_fields = {
+        'filePath': "a file must contain a `filePath`",
+        'fileTitle': "a file must contain a `fileTitle`"
+    }
+
+    for file in files:
+        for field, error_msg in commit_fields.items():
+            if field not in file or not file[field]:
+                raise ValueError(error_msg)
+    return input_data
+
+if __name__ == '__main__':
+    main()
+
+
+
+
+
 def _can_read(output: dict,
               program: str,
               project: str,
               user: dict) -> bool:
-    """Check if user can read a project in the given program.
+    """
+    For checking read permissions. Not currently being used
+    Check if user can read a project in the given program.
 
     Args:
         output: output dict the json that will be returned to the caller
@@ -145,353 +476,3 @@ def _can_read(output: dict,
                 output['logs'].append(f"HAS SERVICE read-storage on resource {required_service}")
 
     return can_read
-
-
-def _download_and_unzip(username: str,
-                        gh_token: str,
-                        file_path: str,
-                        repo_url: str,
-                        bucket: str,
-                        profile: str,
-                        api_endpoint: str,
-                        project: str,
-                        output: Dict[str, Any],
-                        dest_dir: pathlib.Path) -> bool | None:
-    """
-    Download and unzip an object from Git LFS to a destination directory.
-    """
-    try:
-        repo_name = pathlib.Path(repo_url).stem
-        target_dir = os.path.join(os.getcwd(), repo_name)
-
-        # Git clone
-        clone_url = f"https://{username}:{gh_token}@{repo_url}"
-        logging.info(f"clone URL: {clone_url}")
-        if not _run_subprocess(["git", "clone", clone_url], os.getcwd(), output, f"ERROR CLONING {repo_url}"):
-            return False
-
-        # Git LFS init
-        token = _get_token()
-        init_cmd = ["git-drs", "init", "--bucket", bucket, "--token", token, "--profile", profile, "--project", project, "--url", api_endpoint]
-        if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING GIT-DRS for {repo_url}"):
-            return False
-
-        # Git LFS pull
-        pull_cmd = ["git-lfs", "pull", "-I", file_path]
-        if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file_path}"):
-            return False
-
-        output['logs'].append(f"DOWNLOADED {file_path}")
-
-        # Unzip the file
-        unzip_cmd = ["unzip", "-o", "-j", os.path.join(target_dir, file_path), "-d", str(dest_dir)]
-        if not _run_subprocess(unzip_cmd, target_dir, output, f"ERROR UNZIPPING {file_path}"):
-            return False
-
-        output['logs'].append(f"UNZIPPED {dest_dir}")
-        return True
-
-    except Exception as e:
-        _handle_error(output, f"An unexpected error occurred in _download_and_unzip: {e}", Exception)
-
-
-
-def _load_all(hostname,
-              program: str,
-              project: str,
-              output: dict,
-              file_path: str,
-              work_path: str) -> bool:
-
-    logs = None
-    try:
-        for file in pathlib.Path(file_path).rglob('*'):
-            if file.suffix in ['.ndjson', '.json']:
-                # output dictionary is capturing logs from this function
-                status = bulk_load_raw(hostname, _get_graphName(),
-                    f"{program}-{project}", str(file), output, _get_token())
-                output["logs"].append(status)
-                print(status)
-                if status["status"] != 200:
-                    raise Exception(f"Critical Error load of file {file} returned non 200 status {status['status']}")
-
-        assert pathlib.Path(work_path).exists(), f"Directory {work_path} does not exist."
-        work_path = pathlib.Path(work_path)
-        db_path = (work_path / "local_fhir.db")
-        db_path.unlink(missing_ok=True)
-
-        print("loading sqlite db...")
-        output["logs"].append("loading sqlite db...")
-
-        db = LocalFHIRDatabase(db_name=db_path)
-        db.bulk_insert_data(resources=get_project_data(hostname, _get_graphName(), f"{program}-{project}", output, _get_token(), 1024*1024))
-
-        index_generator_dict = {
-            'researchsubject': db.flattened_research_subjects,
-            'specimen': db.flattened_specimens,
-            'file': db.flattened_document_references,
-            "medicationadministration": db.flattened_medication_administrations,
-            "groupmember": db.flattened_group_members,
-        }
-
-        print("loading opensearch...")
-        output["logs"].append("loading opensearch...")
-
-        # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
-        for index in index_generator_dict.keys():
-            meta_flat_delete(project_id=f"{program}-{project}", index=index)
-
-        for index, generator in index_generator_dict.items():
-            load_flat(project_id=f"{program}-{project}", index=index,
-                      generator=generator(),
-                      limit=None, elastic_url=DEFAULT_ELASTIC,
-                      output_path=None)
-
-    # when making changes to Elasticsearch
-    except OpenSearchException as e:
-        output['logs'].append(f"An ElasticSearch Exception occurred: {str(e)}")
-        tb = traceback.format_exc()
-        print("TRACEBACK: ", tb)
-        print("OpenSearchException: ", str(e))
-        output['logs'].append(tb)
-        if logs is not None:
-            output['logs'].extend(logs)
-        _write_output_to_client(output)
-        raise
-
-    # all other exceptions
-    except Exception as e:
-        output['logs'].append(f"An Exception Occurred: {str(e)}")
-        tb = traceback.format_exc()
-        print("TRACEBACK: ", tb)
-        print("Exception: ", str(e))
-        output['logs'].append(tb)
-        if logs is not None:
-            output['logs'].extend(logs)
-        _write_output_to_client(output)
-        raise
-
-    output['logs'].append(f"Loaded {program}-{project}")
-    if logs is not None:
-        output['logs'].extend(logs)
-    return True
-
-
-def _run_subprocess(cmd: List[str], cwd: str, output: Dict[str, Any], descriptive_error: str) -> bool:
-    """Helper function to run subprocess commands and handle errors with detailed messages."""
-    try:
-        # Use subprocess.run with check=True and capture_output=True
-        # This will automatically raise a CalledProcessError on non-zero exit codes.
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            text=True  # Decodes stdout and stderr as strings
-        )
-        logging.info(f"Successfully ran command: {' '.join(cmd)}")
-        if result.stdout:
-            logging.debug(f"STDOUT: {result.stdout.strip()}")
-            output['logs'].append(f"STDOUT: {result.stdout.strip()}")
-        return True
-    except subprocess.CalledProcessError as e:
-        # The key improvement: include the stderr from the failed command.
-        detailed_error_msg = f"{descriptive_error}. Command failed with return code {e.returncode}."
-        if e.stderr:
-            detailed_error_msg += f"\nGit Error Details:\n{e.stderr.strip()}"
-
-        # Raise a custom exception or a more informative one
-        _handle_error(output, detailed_error_msg, subprocess.CalledProcessError)
-        return False
-    except FileNotFoundError:
-        _handle_error(output, f"Command not found: {cmd[0]}", FileNotFoundError)
-    except Exception as e:
-        _handle_error(output, f"An unexpected error occurred: {e}", Exception)
-
-
-def _empty_project(hostname,
-                   output: dict,
-                   program: str,
-                   project: str,
-                   user: dict,
-                   config_path: str | None = None):
-    """Clear out graph and flat metadata for project """
-    # check permissions
-    try:
-        grip_delete(hostname, graph_name=_get_graphName(),
-                    project_id=f"{program}-{project}",
-                    output=output, access_token=_get_token())
-        output['logs'].append(f"EMPTIED graph for {program}-{project}")
-
-        for index in ["researchsubject", "specimen", "file"]:
-            meta_flat_delete(project_id=f"{program}-{project}", index=index)
-        output['logs'].append(f"EMPTIED flat for {program}-{project}")
-
-    except Exception as e:
-        output['logs'].append(f"An Exception Occurred emptying project {program}-{project}: {str(e)}")
-        tb = traceback.format_exc()
-        output['logs'].append(tb)
-        _write_output_to_client(output)
-        raise
-
-
-def main():
-    token = _get_token()
-    auth = _auth(token)
-    hostname = "https://" + str(_get_hostname())
-    print("[out] HOSTNAME: ", hostname)
-
-
-    print("[out] authorized successfully")
-    print("[out] retrieving user info...")
-    user = _user(auth)
-
-    output = {'user': user['email'], 'files': [], 'logs': []}
-    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-
-    # output['env'] = {k: v for k, v in os.environ.items()}
-
-    input_data = _input_data()
-    _write_output_to_client(input_data)
-    program, project = _get_program_project(input_data)
-
-    method = input_data.get("method", None)
-    assert method, "input data must contain a `method`"
-
-    if method.lower() == 'put':
-        # read from bucket, write to fhir store
-        _put(hostname, input_data, output, program, project, user)
-    elif method.lower() == 'delete':
-        _empty_project(hostname, output, program, project, user,
-                       config_path="config.yaml")
-    else:
-        raise Exception(f"unknown method {method}")
-
-    # note, only the last output (a line in stdout with `[out]` prefix) is returned to the caller
-    _write_output_to_client(output)
-
-
-def _put(hostname: str,
-         input_data: Dict[str, Any],
-         output: Dict[str, Any],
-         program: str,
-         project: str,
-         user: Dict[str, Any]):
-    """
-    Import data from a bucket to the graph, flat, and fhir stores.
-
-    Args:
-        hostname (str): The hostname for the API endpoint.
-        input_data (Dict[str, Any]): The input data containing user and file information.
-        output (Dict[str, Any]): A dictionary to store logs and output files.
-        program (str): The program name.
-        project (str): The project name.
-        user (Dict[str, Any]): The user information.
-    """
-    try:
-        # Check permissions and handle early exit
-        if not _can_create(output, program, project, user):
-            error_msg = (f"ERROR 401: No permissions to create project {project} on program {program}. "
-                         "You can view your project-level permissions with g3t ping")
-            _handle_error(output, error_msg, Exception)
-
-        # Use a separate function to validate and extract input data
-        validated_data = _validate_and_extract_input(input_data)
-
-        # Use descriptive variable names
-        username = validated_data['ghUserName']
-        gh_token = validated_data['ghToken']
-        bucket_name = validated_data['bucketName']
-        profile = validated_data['profile']
-        api_endpoint = validated_data['APIEndpoint']
-
-        # Extract commit details
-        commit = validated_data['push']['commits'][-1]
-        file_path = commit['filePath']
-        repo_url = commit['repoUrl']
-
-        # Define paths
-        unzip_path = pathlib.Path(f"/root/repo/{project}/snapshot")
-        unzip_path.mkdir(parents=True, exist_ok=True)
-        repo_path = pathlib.Path(f"/root/repo/{project}")
-
-        # Download and unzip the data
-        success = _download_and_unzip(
-            username=username,
-            gh_token=gh_token,
-            file_path=file_path,
-            repo_url=repo_url,
-            bucket=bucket_name,
-            profile=profile,
-            api_endpoint=api_endpoint,
-            project=f"{program}-{project}",
-            output=output,
-            dest_dir=unzip_path
-        )
-
-        if success:
-            # Log files found
-            found_files = [str(p) for p in unzip_path.glob('*')]
-            output['files'].extend(found_files)
-            logging.info(f"Found files: {found_files}")
-
-            # Load the data
-            _load_all(hostname, program, project, output, unzip_path, "work")
-
-        # Clean up the repository directory
-        if repo_path.exists():
-            shutil.rmtree(repo_path)
-            logging.info(f"Cleaned up directory: {repo_path}")
-
-    except Exception as e:
-        _handle_error(output, f"An unexpected error occurred in _put: {e}", Exception)
-
-
-
-def _write_output_to_client(output):
-    '''
-    formats output as json to stdout so it is passed back to the client,
-    most importantly to display relevant logs from the job erroring out
-    '''
-    print(f"[out] {json.dumps(output, separators=(',', ':'))}")
-
-
-def _handle_error(output: Dict[str, Any], message: str, exception_type: type = Exception):
-    """A helper function to log errors, update output, and raise an exception."""
-    logging.error(message)
-    output['logs'].append(message)
-    _write_output_to_client(output)
-    raise exception_type(message)
-
-def _validate_and_extract_input(input_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate and extract required fields from the input_data dictionary."""
-    required_fields = {
-        'ghUserName': "input data must contain a `ghUserName`",
-        'ghToken': "input data must contain a `ghToken`",
-        'bucketName': "input data must contain a `bucketName`",
-        'profile': "input data must contain a `profile`",
-        'APIEndpoint': "input data must contain a `APIEndpoint`",
-        'push': "input data must contain a `push`"
-    }
-
-    for field, error_msg in required_fields.items():
-        if field not in input_data or not input_data[field]:
-            raise ValueError(error_msg)
-
-    # Validate nested commit data
-    if 'commits' not in input_data['push'] or not input_data['push']['commits']:
-        raise ValueError("`push` data must contain `commits`")
-
-    commit = input_data['push']['commits'][-1]
-    commit_fields = {
-        'filePath': "commit must contain a `filePath`",
-        'repoUrl': "commit must contain a `repoUrl`"
-    }
-
-    for field, error_msg in commit_fields.items():
-        if field not in commit or not commit[field]:
-            raise ValueError(error_msg)
-    return input_data
-
-if __name__ == '__main__':
-    main()
