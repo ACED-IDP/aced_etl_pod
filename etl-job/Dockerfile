@@ -1,6 +1,6 @@
 FROM golang:1.24.0-bookworm AS go-builder
 
-RUN go install github.com/calypr/git-drs@526654610a78fdd587aa66afc1e3dc22b0c155c4
+RUN go install github.com/calypr/git-drs@3653d48d165233147f5880d680ba83af0f14d1a3
 
 FROM python:3.12-bookworm
 
@@ -34,6 +34,7 @@ COPY ./requirements.txt /root/
 RUN source venv/bin/activate && pip install -r requirements.txt
 RUN source venv/bin/activate && pip install "gen3_tracker==0.0.7rc19" 
 RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc14"
+RUN source venv/bin/activate && pip install "fhir.resources==7.1.0"
 
 COPY --from=go-builder /go/bin/git-drs /usr/local/bin/git-drs
 
