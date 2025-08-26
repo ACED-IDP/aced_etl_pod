@@ -284,23 +284,33 @@ def _handle_error(output: Dict[str, Any], message: str, exception_type: type = E
 
 def _validate_and_extract_input(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and extract required fields from the input_data dictionary."""
-    required_fields = ['ghUserName', 'ghToken', 'ghCommitHash', 'ghRepoUrl', 'bucketName', 'profile', 'APIEndpoint', ]
+    required_fields = [
+        'ghUserName',
+        'ghToken',
+        'ghCommitHash',
+        'ghRepoUrl',
+        'bucketName',
+        'profile',
+        'APIEndpoint',
+        'files'
+    ]
 
-    for field, error_msg in required_fields.items():
+    for field in required_fields:
         if field not in input_data or not input_data[field]:
             raise ValueError(f"input data must contain a `{field}`")
 
-    files = input_data['file']
-    if len(files) > 0:
-        commit_fields = {
-            'filePath': "a file must contain a `filePath`",
-            'fileTitle': "a file must contain a `fileTitle`"
-        }
+    files = input_data['files']
+    if not isinstance(files, list):
+        raise TypeError("`files` must be a list")
 
+    if len(files) > 0:
+        commit_fields = ['filePath', 'fileTitle']
         for file in files:
-            for field, error_msg in commit_fields.items():
+            if not isinstance(file, dict):
+                raise TypeError("each item in `files` must be a dictionary")
+            for field in commit_fields:
                 if field not in file or not file[field]:
-                    raise ValueError(error_msg)
+                    raise ValueError(f"file data must contain a `{field}`")
     return input_data
 
 
