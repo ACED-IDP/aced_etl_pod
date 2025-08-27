@@ -24,6 +24,8 @@ from fhir.resources.documentreference import DocumentReferenceContent
 from fhir.resources.attachment import Attachment
 from fhir.resources.identifier import Identifier
 from fhir.resources.extension import Extension
+from pydantic.json import pydantic_encoder
+
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
@@ -254,6 +256,8 @@ def _run_subprocess(cmd: List[str], cwd: str, output: Dict[str, Any], error_msg:
         logging.info(f"Successfully ran command: {' '.join(cmd)}")
         if result.stdout:
             output['logs'].append(f"STDOUT: {result.stdout.strip()}")
+        if result.stderr:
+            output['logs'].append(f"STDERR: {result.stderr.strip()}")
         return True
     except subprocess.CalledProcessError as e:
         detailed_error = f"{error_msg}. Command failed with return code {e.returncode}."
@@ -344,7 +348,7 @@ def get_resource_files(fhir_directory: str, resource_type: str) -> List[str]:
         try:
             with open(file_path, 'r') as f:
                 if first_line := f.readline().strip():
-                    if orjson.loads(first_line.encode()).get("resourceType") == resource_type:
+                    if orjson.loads(first_line).get("resourceType") == resource_type:
                         resource_files.append(file_path)
         except (IOError, orjson.JSONDecodeError):
             continue
@@ -418,7 +422,7 @@ def get_research_study(fhir_directory: str, program: str, project: str) -> Optio
                 for line in f:
                     if not line.strip():
                         continue
-                    record_dict = orjson.loads(line.encode())
+                    record_dict = orjson.loads(line)
                     if record_dict.get("resourceType") == RESEARCH_STUDY:
                         return ResearchStudy.parse_obj(record_dict)
         except (IOError, orjson.JSONDecodeError, ValueError) as e:
@@ -445,7 +449,7 @@ def get_research_study(fhir_directory: str, program: str, project: str) -> Optio
     new_research_study_file = os.path.join(fhir_directory, f"{RESEARCH_STUDY}.ndjson")
     try:
         with open(new_research_study_file, 'wb') as f:
-            f.write(orjson.dumps(skeleton) + b"\n")
+            f.write(orjson.dumps(skeleton, option=orjson.OPT_APPEND_NEWLINE, default=pydantic_encoder))
         logging.info(f"Created new ResearchStudy at {new_research_study_file} with ID {new_id}")
     except IOError as e:
         logging.error(f"Error writing ResearchStudy file {new_research_study_file}: {e}")
@@ -469,12 +473,12 @@ def _process_drs_records_and_update_fhir(drs_records_file: str, fhir_directory: 
         if not os.path.exists(file_path):
             continue
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path, 'r', encoding="utf-8") as f:
                 for line in f:
                     if not line.strip():
                         continue
                     try:
-                        record_dict = orjson.loads(line.encode())
+                        record_dict = orjson.loads(line)
                         record = DocumentReference.parse_obj(record_dict)
                         if record.id:
                             existing_fhir_records[record.id] = record
@@ -485,11 +489,11 @@ def _process_drs_records_and_update_fhir(drs_records_file: str, fhir_directory: 
             logging.error(f"Error reading FHIR file {file_path}: {e}. Skipping file.")
 
     try:
-        with open(drs_records_file, 'r') as drs_file:
+        with open(drs_records_file, 'r', encoding="utf-8") as drs_file:
             hostname = f"https://{_get_env_var('GEN3_HOSTNAME')}"
             for line in drs_file:
                 try:
-                    drs_record = orjson.loads(line.encode())
+                    drs_record = orjson.loads(line)
                     fhir_record = translate_to_fhir(drs_record, f"{program}-{project}", hostname, research_study_id)
                     record_id = fhir_record.id
 
@@ -507,6 +511,7 @@ def _process_drs_records_and_update_fhir(drs_records_file: str, fhir_directory: 
                             existing_attachment.title = new_attachment.title
                             existing_attachment.extension = new_attachment.extension or None
                             existing_attachment.url = new_attachment.url or None
+                            existing_attachment.hash = new_attachment.hash or None
                         else:
                             existing.content = fhir_record.content
                         existing.subject = {"reference": f"{RESEARCH_STUDY}/{research_study_id}"}
@@ -535,7 +540,7 @@ def _process_drs_records_and_update_fhir(drs_records_file: str, fhir_directory: 
                         logging.error(f"Error: Record with id {record.id} is not a DocumentReference. Skipping.")
                         continue
                     try:
-                        f.write(orjson.dumps(record.dict(exclude_none=True)) + b"\n")
+                        f.write(orjson.dumps(record.dict(exclude_none=True), option=orjson.OPT_APPEND_NEWLINE,  default=pydantic_encoder))
                     except AttributeError as e:
                         logging.error(f"Error serializing record with id {record.id}: {e}. Skipping.")
         logging.info("Finished writing all records to files.")
