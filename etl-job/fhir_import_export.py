@@ -215,11 +215,12 @@ def _load_all(hostname,
         db.bulk_insert_data(resources=get_project_data(hostname, _get_graphName(), f"{program}-{project}", output, _get_token(), 1024*1024))
 
         index_generator_dict = {
-            'researchsubject': db.flattened_research_subjects,
+            # index name needs to match column prefix coming off of the generators otherwise this will fail
+            'research_subject': db.flattened_research_subjects,
             'specimen': db.flattened_specimens,
-            'file': db.flattened_document_references,
-            "medicationadministration": db.flattened_medication_administrations,
-            "groupmember": db.flattened_group_members,
+            'document_reference': db.flattened_document_references,
+            "medication_administration": db.flattened_medication_administrations,
+            "group_member": db.flattened_group_members,
         }
 
         print("loading opensearch...")
