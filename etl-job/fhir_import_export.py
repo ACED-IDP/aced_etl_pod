@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+import inflection
 
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
@@ -229,8 +230,14 @@ def _load_all(hostname,
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
 
         for index, generator in index_generator_dict.items():
+
+            prefix = inflection.underscore(index)
+            prefixed_generator = (
+                {f"{prefix}_{k}": v for k, v in record.items()}
+                for record in generator()
+            )
             load_flat(project_id=f"{program}-{project}", index=index,
-                      generator=generator(),
+                      generator=prefixed_generator,
                       limit=None, elastic_url=DEFAULT_ELASTIC,
                       output_path=None)
 
