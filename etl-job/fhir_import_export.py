@@ -219,6 +219,7 @@ def _load_all(hostname,
             'file': db.flattened_document_references,
             "medicationadministration": db.flattened_medication_administrations,
             "groupmember": db.flattened_group_members,
+            "pathaggregation": db.flattened_path_aggregations,
         }
 
         print("loading opensearch...")
@@ -278,7 +279,7 @@ def _empty_project(hostname,
                     output=output, access_token=_get_token())
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
 
-        for index in ["researchsubject", "specimen", "file"]:
+        for index in ["researchsubject", "specimen", "file", "pathaggregation"]:
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
         output['logs'].append(f"EMPTIED flat for {program}-{project}")
 
