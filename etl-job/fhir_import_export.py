@@ -19,6 +19,9 @@ from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
+# Define the keys in one place at the top of the file
+INDEX_NAMES = ["research_subject", "specimen", "document_reference", "medication_administration", "group_member"]
+
 
 def _get_token() -> str | None:
     """Get ACCESS_TOKEN from environment"""
@@ -214,20 +217,17 @@ def _load_all(hostname,
         db = LocalFHIRDatabase(db_name=db_path)
         db.bulk_insert_data(resources=get_project_data(hostname, _get_graphName(), f"{program}-{project}", output, _get_token(), 1024*1024))
 
+        # associate index with generator function, eg "specimen": db.flattened_specimens
         index_generator_dict = {
             # index name needs to match column prefix coming off of the generators otherwise this will fail
-            'research_subject': db.flattened_research_subjects,
-            'specimen': db.flattened_specimens,
-            'document_reference': db.flattened_document_references,
-            "medication_administration": db.flattened_medication_administrations,
-            "group_member": db.flattened_group_members,
+            index: getattr(db, f"flattened_{index}s") for index in INDEX_NAMES
         }
 
         print("loading opensearch...")
         output["logs"].append("loading opensearch...")
 
         # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
-        for index in index_generator_dict.keys():
+        for index in INDEX_NAMES:
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
 
         for index, generator in index_generator_dict.items():
@@ -286,7 +286,7 @@ def _empty_project(hostname,
                     output=output, access_token=_get_token())
         output['logs'].append(f"EMPTIED graph for {program}-{project}")
 
-        for index in ["researchsubject", "specimen", "file"]:
+        for index in INDEX_NAMES:
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
         output['logs'].append(f"EMPTIED flat for {program}-{project}")
 
