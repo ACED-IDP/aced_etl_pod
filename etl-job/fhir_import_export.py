@@ -8,6 +8,7 @@ import traceback
 import subprocess
 import orjson
 import uuid
+import inflection
 
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
@@ -25,6 +26,11 @@ from fhir.resources.attachment import Attachment
 from fhir.resources.identifier import Identifier
 from fhir.resources.extension import Extension
 from pydantic.json import pydantic_encoder
+logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+
+# Define the keys in one place at the top of the file
+INDEX_NAMES = ["research_subject", "specimen", "document_reference", "medication_administration", "group_member"]
+
 
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
@@ -201,12 +207,10 @@ def _load_all(
                 1024*1024)
         )
 
+        # associate index with generator function, eg "specimen": db.flattened_specimens
         index_generator_dict = {
-            'researchsubject': db.flattened_research_subjects,
-            'specimen': db.flattened_specimens,
-            'file': db.flattened_document_references,
-            "medicationadministration": db.flattened_medication_administrations,
-            "groupmember": db.flattened_group_members,
+            # index name needs to match column prefix coming off of the generators otherwise this will fail
+            index: getattr(db, f"flattened_{index}s") for index in INDEX_NAMES
         }
 
         logging.info("loading opensearch...")
@@ -222,6 +226,24 @@ def _load_all(
                 output_path=None
             )
 
+
+        # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
+        for index in INDEX_NAMES:
+            meta_flat_delete(project_id=f"{program}-{project}", index=index)
+
+        for index, generator in index_generator_dict.items():
+
+            prefix = inflection.underscore(index)
+            prefixed_generator = (
+                {f"{prefix}_{k}": v for k, v in record.items()}
+                for record in generator()
+            )
+            load_flat(project_id=f"{program}-{project}", index=index,
+                      generator=prefixed_generator,
+                      limit=None, elastic_url=DEFAULT_ELASTIC,
+                      output_path=None)
+
+    # when making changes to Elasticsearch
     except OpenSearchException as e:
         _handle_error(output, f"An ElasticSearch Exception occurred: {str(e)}\n{traceback.format_exc()}", OpenSearchException)
     except Exception as e:
@@ -408,6 +430,10 @@ def _put(hostname: str,
         if load_path.exists():
             #shutil.rmtree(load_path)
             logging.info(f"Cleaned up directory: {load_path}")
+        
+        for index in INDEX_NAMES:
+            meta_flat_delete(project_id=f"{program}-{project}", index=index)
+        output['logs'].append(f"EMPTIED flat for {program}-{project}")
 
     except Exception as e:
         _handle_error(output, f"An unexpected error occurred in _put: {e}", Exception)
