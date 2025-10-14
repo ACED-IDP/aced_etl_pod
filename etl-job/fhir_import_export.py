@@ -98,10 +98,8 @@ def _download_and_unzip(gh_username: str,
                         gh_token: str,
                         gh_repo_url: str,
                         gh_commit_hash: str,
-                        files: List[Dict],
                         bucket: str,
                         profile: str,
-                        api_endpoint: str,
                         project_id: str,
                         output: Dict[str, Any],
                         dest_dir: pathlib.Path) -> bool | None:
@@ -120,19 +118,16 @@ def _download_and_unzip(gh_username: str,
         if not _run_subprocess(checkout_cmd, target_dir, output, f"ERROR CHECKING OUT for {gh_repo_url} ON HASH {gh_commit_hash}"):
             return False
 
-        init_cmd = ["forge", "init", "--bucket", bucket, "--token", _get_env_var('ACCESS_TOKEN'), "--profile", profile, "--project", project_id, "--url", api_endpoint]
+        init_cmd = ["forge", "init", "--bucket", bucket, "--token", _get_env_var('ACCESS_TOKEN'), "--profile", profile, "--project", project_id]
         if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING forge for {gh_repo_url}"):
             return False
 
-        for file in files:
-            pull_cmd = ["git-lfs", "pull", "-I", file["filePath"]]
-            if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file['filePath']}"):
+        for file in [f for f in os.listdir(os.path.join(target_dir, "META")) if f.endswith(".ndjson")]:
+            meta_dir = os.path.join("META", file)
+            pull_cmd = ["git-lfs", "pull", "-I", meta_dir]
+            if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file}"):
                 return False
-            output['logs'].append(f"DOWNLOADED {file['filePath']}")
-
-            mv_cmd = ["mv", os.path.join(target_dir, file["filePath"]), str(dest_dir)]
-            if not _run_subprocess(mv_cmd, target_dir, output, f"ERROR MOVING {file['filePath']}"):
-                return False
+            output['logs'].append(f"DOWNLOADED {file}")
 
         return True
 
@@ -200,35 +195,25 @@ def _load_all(
             index: getattr(db, f"flattened_{index}s") for index in INDEX_NAMES
         }
 
-        logging.info("loading opensearch...")
-        output["logs"].append("loading opensearch...")
-        for index in index_generator_dict:
-            meta_flat_delete(project_id=project_id, index=index)
-            load_flat(
-                project_id=project_id,
-                index=index,
-                generator=index_generator_dict[index](),
-                limit=None,
-                elastic_url=DEFAULT_ELASTIC,
-                output_path=None
-            )
-
-
         # To ensure differences in the dataframer versions do not conflict, clear the project, and reload the project.
         for index in INDEX_NAMES:
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
 
-        for index, generator in index_generator_dict.items():
-
+        for index in INDEX_NAMES:
+            generator = index_generator_dict[index]
             prefix = inflection.underscore(index)
             prefixed_generator = (
                 {f"{prefix}_{k}": v for k, v in record.items()}
                 for record in generator()
             )
-            load_flat(project_id=f"{program}-{project}", index=index,
-                      generator=prefixed_generator,
-                      limit=None, elastic_url=DEFAULT_ELASTIC,
-                      output_path=None)
+            load_flat(
+                project_id=f"{program}-{project}",
+                index=index,
+                generator=prefixed_generator,
+                limit=None,
+                elastic_url=DEFAULT_ELASTIC,
+                output_path=None
+            )
 
     # when making changes to Elasticsearch
     except OpenSearchException as e:
@@ -304,26 +289,12 @@ def _validate_and_extract_input(input_data: Dict[str, Any]) -> Dict[str, Any]:
         'ghRepoUrl',
         'bucketName',
         'profile',
-        'APIEndpoint',
-        'files'
     ]
 
     for field in required_fields:
         if field not in input_data or not input_data[field]:
             raise ValueError(f"input data must contain a `{field}`")
 
-    files = input_data['files']
-    if not isinstance(files, list):
-        raise TypeError("`files` must be a list")
-
-    if len(files) > 0:
-        commit_fields = ['filePath', 'fileTitle']
-        for file in files:
-            if not isinstance(file, dict):
-                raise TypeError("each item in `files` must be a dictionary")
-            for field in commit_fields:
-                if field not in file or not file[field]:
-                    raise ValueError(f"file data must contain a `{field}`")
     return input_data
 
 
@@ -360,10 +331,8 @@ def _put(hostname: str,
             gh_token=validated_data['ghToken'],
             gh_repo_url=validated_data['ghRepoUrl'],
             gh_commit_hash=validated_data['ghCommitHash'],
-            files=validated_data['files'],
             bucket=validated_data['bucketName'],
             profile=validated_data['profile'],
-            api_endpoint=validated_data['APIEndpoint'],
             project_id=f"{program}-{project}",
             output=output,
             dest_dir=load_path
@@ -376,6 +345,12 @@ def _put(hostname: str,
         meta_init_cmd = ["forge", "meta", "init"]
         if not _run_subprocess(meta_init_cmd, target_dir, output, f"ERROR RUNNING FORGE META INIT FOR PROJECT {program}-{project}"):
             return False
+
+        for file in [f for f in os.listdir(os.path.join(target_dir, "META")) if f.endswith(".ndjson")]:
+            meta_dir = os.path.join("META", file)
+            mv_cmd = ["mv", meta_dir, str(load_path)]
+            if not _run_subprocess(mv_cmd, target_dir, output, f"ERROR MOVING {file}"):
+                return False
 
         if success:
             found_files = [str(p) for p in load_path.glob('*')]
