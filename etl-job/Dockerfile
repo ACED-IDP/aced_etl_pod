@@ -1,6 +1,6 @@
-FROM golang:1.24.0-bookworm AS go-builder
+FROM golang:1.24.2-bookworm AS go-builder
 
-RUN go install github.com/calypr/git-drs@3653d48d165233147f5880d680ba83af0f14d1a3
+RUN go install github.com/calypr/forge@7b5a9ea72abe58498ac5ec523eb84c246b163460
 
 FROM python:3.12-bookworm
 
@@ -32,7 +32,8 @@ ENV PYTHONUNBUFFERED=1
 ENV PATH="/usr/local/bin:$PATH"
 COPY ./requirements.txt /root/
 RUN source venv/bin/activate && pip install -r requirements.txt
-RUN source venv/bin/activate && pip install "gen3_tracker==0.0.7rc24" 
+
+RUN source venv/bin/activate && pip install "gen3_tracker==0.0.8rc1" 
 RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc18"
 RUN source venv/bin/activate && pip install "fhir.resources==7.1.0"
 

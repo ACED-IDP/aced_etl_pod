@@ -2,13 +2,12 @@ import json
 import logging
 import os
 import pathlib
-import shutil
 import sys
 import traceback
 import subprocess
-import orjson
-import uuid
+
 import inflection
+import shutil
 
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
@@ -19,24 +18,12 @@ from gen3.auth import Gen3Auth
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 from typing import List, Dict, Any, Tuple, Optional
 
-from fhir.resources.researchstudy import ResearchStudy
-from fhir.resources.documentreference import DocumentReference
-from fhir.resources.documentreference import DocumentReferenceContent
-from fhir.resources.attachment import Attachment
-from fhir.resources.identifier import Identifier
-from fhir.resources.extension import Extension
-from pydantic.json import pydantic_encoder
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 # Define the keys in one place at the top of the file
 INDEX_NAMES = ["research_subject", "specimen", "document_reference", "medication_administration", "group_member"]
 
-
-
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
-
-RESEARCH_STUDY = "ResearchStudy"
-DOCUMENT_REFERENCE = "DocumentReference"
 
 def _get_env_var(key: str, error_msg: Optional[str] = None) -> Optional[str]:
     """Get environment variable or raise error if not found."""
@@ -133,8 +120,8 @@ def _download_and_unzip(gh_username: str,
         if not _run_subprocess(checkout_cmd, target_dir, output, f"ERROR CHECKING OUT for {gh_repo_url} ON HASH {gh_commit_hash}"):
             return False
 
-        init_cmd = ["git-drs", "init", "--bucket", bucket, "--token", _get_env_var('ACCESS_TOKEN'), "--profile", profile, "--project", project_id, "--url", api_endpoint]
-        if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING GIT-DRS for {gh_repo_url}"):
+        init_cmd = ["forge", "init", "--bucket", bucket, "--token", _get_env_var('ACCESS_TOKEN'), "--profile", profile, "--project", project_id, "--url", api_endpoint]
+        if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING forge for {gh_repo_url}"):
             return False
 
         for file in files:
@@ -340,43 +327,6 @@ def _validate_and_extract_input(input_data: Dict[str, Any]) -> Dict[str, Any]:
     return input_data
 
 
-def translate_to_fhir(drs_record: Dict[str, Any], project_id: str, hostname: str, research_study_id: str) -> DocumentReference:
-    """Translate a DRS record into a FHIR DocumentReference object."""
-    did = drs_record.get("did")
-    file_name = drs_record.get("file_name")
-    size = drs_record.get("size")
-    hashes = drs_record.get("hashes", {})
-    created_date = format_fhir_datetime(drs_record.get("created_date"))
-    updated_date = format_fhir_datetime(drs_record.get("updated_date"))
-    urls = drs_record.get("urls", [])
-
-    identifier = Identifier(use="official", system=f"{hostname}/{project_id}", value=did)
-    extensions = [Extension(url=f"{hostname}/fhir/StructureDefinition/checksum-{hash_type}", valueString=hash_value) for hash_type, hash_value in hashes.items()]
-    attachment_obj = Attachment(creation=created_date, size=size, title=file_name, extension=extensions or None, url=urls[0] if urls else None)
-    content = DocumentReferenceContent(attachment=attachment_obj)
-
-    return DocumentReference(
-        id=did, status="current", docStatus="final", date=updated_date, identifier=[identifier], content=[content],subject={"reference": f"{RESEARCH_STUDY}/{research_study_id}"}
-    )
-
-
-def get_resource_files(fhir_directory: str, resource_type: str) -> List[str]:
-    """Search directory for NDJSON files of the specified FHIR resource type."""
-    resource_files = []
-    for filename in os.listdir(fhir_directory):
-        if not filename.endswith(".ndjson"):
-            continue
-        file_path = os.path.join(fhir_directory, filename)
-        try:
-            with open(file_path, 'r') as f:
-                if first_line := f.readline().strip():
-                    if orjson.loads(first_line).get("resourceType") == resource_type:
-                        resource_files.append(file_path)
-        except (IOError, orjson.JSONDecodeError):
-            continue
-    return resource_files
-
-
 def _put(hostname: str,
          input_data: Dict[str, Any],
          output: Dict[str, Any],
@@ -419,7 +369,13 @@ def _put(hostname: str,
             dest_dir=load_path
         )
 
-        _apply_indexd_server_info(program, project, validated_data['ghRepoUrl'], output)
+        repo_name = pathlib.Path(validated_data['ghRepoUrl']).stem
+        target_dir = os.path.join(os.getcwd(), repo_name)
+        load_path = pathlib.Path(f"/root/repo/{project}")
+
+        meta_init_cmd = ["forge", "meta", "init"]
+        if not _run_subprocess(meta_init_cmd, target_dir, output, f"ERROR RUNNING FORGE META INIT FOR PROJECT {program}-{project}"):
+            return False
 
         if success:
             found_files = [str(p) for p in load_path.glob('*')]
@@ -428,185 +384,15 @@ def _put(hostname: str,
             _load_all(hostname, program, project, output, load_path, "work")
 
         if load_path.exists():
-            #shutil.rmtree(load_path)
+            shutil.rmtree(load_path)
             logging.info(f"Cleaned up directory: {load_path}")
-        
+
         for index in INDEX_NAMES:
             meta_flat_delete(project_id=f"{program}-{project}", index=index)
         output['logs'].append(f"EMPTIED flat for {program}-{project}")
 
     except Exception as e:
         _handle_error(output, f"An unexpected error occurred in _put: {e}", Exception)
-
-
-def get_research_study(fhir_directory: str, program: str, project: str) -> Optional[ResearchStudy]:
-    """Load existing ResearchStudy from NDJSON or create a new one."""
-    research_study_files = get_resource_files(fhir_directory, RESEARCH_STUDY)
-    for research_study_file in research_study_files:
-        try:
-            with open(research_study_file, 'r') as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    record_dict = orjson.loads(line)
-                    if record_dict.get("resourceType") == RESEARCH_STUDY:
-                        return ResearchStudy.parse_obj(record_dict)
-        except (IOError, orjson.JSONDecodeError, ValueError) as e:
-            logging.error(f"Error reading ResearchStudy file {research_study_file}: {e}. Skipping file.")
-
-    # Create new ResearchStudy if none exists
-    new_id = str(uuid.uuid4())
-    skeleton = {
-        "description": f"Skeleton ResearchStudy for {program}-{project}",
-        "id": new_id,
-        "identifier": [
-            {
-                "system": f"https://caliper-training.ohsu.edu/{program}-{project}",
-                "use": "official",
-                "value": f"{program}-{project}"
-            }
-        ],
-        "resourceType": RESEARCH_STUDY,
-        "status": "active"
-    }
-    research_study = ResearchStudy.parse_obj(skeleton)
-
-    # Save new ResearchStudy to a new file
-    new_research_study_file = os.path.join(fhir_directory, f"{RESEARCH_STUDY}.ndjson")
-    try:
-        with open(new_research_study_file, 'wb') as f:
-            f.write(orjson.dumps(skeleton, option=orjson.OPT_APPEND_NEWLINE, default=pydantic_encoder))
-        logging.info(f"Created new ResearchStudy at {new_research_study_file} with ID {new_id}")
-    except IOError as e:
-        logging.error(f"Error writing ResearchStudy file {new_research_study_file}: {e}")
-
-    return research_study
-
-
-def _process_drs_records_and_update_fhir(drs_records_file: str, fhir_directory: str, program: str, project: str) -> None:
-    """Process DRS records and update FHIR NDJSON files with UPSERT operation."""
-    # Load or create ResearchStudy
-    research_study = get_research_study(fhir_directory, program, project)
-    research_study_id = research_study.id if research_study else "4aedbb51-bf36-5fa2-b676-1eac919c284b"
-
-    doc_ref_files = get_resource_files(fhir_directory, DOCUMENT_REFERENCE) or [os.path.join(fhir_directory, f"{DOCUMENT_REFERENCE}.ndjson")]
-    if not doc_ref_files:
-        logging.info(f"No DocumentReference file(s) found. Creating new file at {doc_ref_files[0]}")
-
-    existing_fhir_records = {}
-    record_to_file_map = {}
-    for file_path in doc_ref_files:
-        if not os.path.exists(file_path):
-            continue
-        try:
-            with open(file_path, 'r', encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        record_dict = orjson.loads(line)
-                        record = DocumentReference.parse_obj(record_dict)
-                        if record.id:
-                            existing_fhir_records[record.id] = record
-                            record_to_file_map[record.id] = file_path
-                    except ValueError as e:
-                        logging.error(f"Invalid FHIR record in {file_path}: {e}. Skipping record.")
-        except (IOError, orjson.JSONDecodeError) as e:
-            logging.error(f"Error reading FHIR file {file_path}: {e}. Skipping file.")
-
-    try:
-        with open(drs_records_file, 'r', encoding="utf-8") as drs_file:
-            hostname = f"https://{_get_env_var('GEN3_HOSTNAME')}"
-            for line in drs_file:
-                try:
-                    drs_record = orjson.loads(line)
-                    fhir_record = translate_to_fhir(drs_record, f"{program}-{project}", hostname, research_study_id)
-                    record_id = fhir_record.id
-
-                    if record_id in existing_fhir_records:
-                        existing = existing_fhir_records[record_id]
-                        existing.status = fhir_record.status
-                        existing.docStatus = fhir_record.docStatus
-                        existing.date = fhir_record.date
-                        existing.identifier = fhir_record.identifier
-                        if existing.content and fhir_record.content:
-                            existing_attachment = existing.content[0].attachment
-                            new_attachment = fhir_record.content[0].attachment
-                            existing_attachment.creation = new_attachment.creation
-                            existing_attachment.size = new_attachment.size
-                            existing_attachment.title = new_attachment.title
-                            existing_attachment.extension = new_attachment.extension or None
-                            existing_attachment.url = new_attachment.url or None
-                            existing_attachment.hash = new_attachment.hash or None
-                        else:
-                            existing.content = fhir_record.content
-                        existing.subject = {"reference": f"{RESEARCH_STUDY}/{research_study_id}"}
-                        logging.info(f"Merged and updated record: {record_id}")
-                    else:
-                        existing_fhir_records[record_id] = fhir_record
-                        record_to_file_map[record_id] = doc_ref_files[0]
-                        logging.info(f"Added new record: {record_id}")
-                except orjson.JSONDecodeError as e:
-                    logging.error(f"Error decoding JSON from DRS file: {e}")
-                except ValueError as e:
-                    logging.error(f"Invalid FHIR data from DRS record: {e}. Skipping record.")
-    except IOError as e:
-        logging.error(f"Error reading DRS records file: {e}")
-        return
-
-    try:
-        file_contents = {path: [] for path in doc_ref_files}
-        for record_id, record in existing_fhir_records.items():
-            file_contents[record_to_file_map.get(record_id, doc_ref_files[0])].append(record)
-
-        for file_path, records in file_contents.items():
-            with open(file_path, 'wb') as f:
-                for record in records:
-                    if not isinstance(record, DocumentReference):
-                        logging.error(f"Error: Record with id {record.id} is not a DocumentReference. Skipping.")
-                        continue
-                    try:
-                        f.write(orjson.dumps(record.dict(exclude_none=True), option=orjson.OPT_APPEND_NEWLINE,  default=pydantic_encoder))
-                    except AttributeError as e:
-                        logging.error(f"Error serializing record with id {record.id}: {e}. Skipping.")
-        logging.info("Finished writing all records to files.")
-    except IOError as e:
-        logging.error(f"Error writing to FHIR files: {e}")
-
-
-def format_fhir_datetime(dt_str):
-    if not dt_str:
-        return None
-    if '.' in dt_str:
-        base, micro = dt_str.split('.')
-        milli = micro[:3]
-        return f"{base}.{milli}+00:00"
-    else:
-        return f"{dt_str}+00:00"
-
-
-def _apply_indexd_server_info(program, project, gh_repo_url, output):
-    """Query Indexd for all File objects that belong to a given project
-        UPSERT DocumentReference rows that match the returned indexd IDs
-
-        In cases where the record exists but doesn't contain the indexd related information,
-        populate the record with the indexd file information, and keep the existing information
-
-    Args:
-        project_id: the program-project string
-
-    """
-
-    repo_name = pathlib.Path(gh_repo_url).stem
-    target_dir = os.path.join(os.getcwd(), repo_name)
-    load_path = pathlib.Path(f"/root/repo/{project}")
-
-    pull_cmd = ["git-drs", "list-project", f"{program}-{project}", "-o", "OBJ.ndjson"]
-    if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR LISTING IDEXD RECORDS FOR PROJECT {program}-{project}"):
-        return False
-
-    _process_drs_records_and_update_fhir(os.path.join(target_dir, "OBJ.ndjson"), load_path, program, project)
-
 
 
 def main() -> None:
