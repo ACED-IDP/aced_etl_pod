@@ -37,10 +37,10 @@ RUN source venv/bin/activate && pip install "gen3_tracker==0.0.8rc1"
 RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc18"
 RUN source venv/bin/activate && pip install "fhir.resources==7.1.0"
 
-COPY --from=go-builder /go/bin/git-drs /usr/local/bin/git-drs
+COPY --from=go-builder /go/bin/forge /usr/local/bin/forge
 ENV PATH="/usr/local/bin:$PATH"
 
-RUN ls -la /usr/local/bin/git-drs
+RUN ls -la /usr/local/bin/forge
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
