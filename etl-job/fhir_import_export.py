@@ -122,6 +122,8 @@ def _download_and_unzip(gh_username: str,
         if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING forge for {gh_repo_url}"):
             return False
 
+        meta_dir_path = os.path.join(target_dir, "META")
+        os.makedirs(meta_dir_path, exist_ok=True)
         for file in [f for f in os.listdir(os.path.join(target_dir, "META")) if f.endswith(".ndjson")]:
             meta_dir = os.path.join("META", file)
             pull_cmd = ["git-lfs", "pull", "-I", meta_dir]
