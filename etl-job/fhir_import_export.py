@@ -53,6 +53,51 @@ def _get_program_project(input_data: Dict[str, Any]) -> Tuple[str, str]:
     return project_id.split('-')
 
 
+
+def _is_guppy_admin(output: dict,
+              program: str,
+              project: str,
+              user: dict) -> bool:
+    """
+    For checking /guppy_admin permissions.
+    Check if user has '*' method on service 'guppy'
+
+    Args:
+        output: output dict the json that will be returned to the caller
+        program: program Gen3 program(-project)
+        project: project Gen3 (program-)project
+        user: user dict from arborist (aka profile)
+    """
+
+    is_guppy_admin = True
+
+    required_resources = [
+        "/guppy_admin",
+    ]
+    for required_resource in required_resources:
+        if required_resource not in user['resources']:
+            output['logs'].append(f"{required_resource} not found in user resources")
+            is_guppy_admin = False
+        else:
+            output['logs'].append(f"HAS RESOURCE {required_resource}")
+
+    required_services = [
+        "/guppy_admin"
+    ]
+    for required_service in required_services:
+        if required_service not in user['authz']:
+            output['logs'].append(f"{required_service} not found in user authz")
+            is_guppy_admin = False
+        else:
+            if {'method': '*', 'service': "guppy"} not in user['authz'][required_service]:
+                output['logs'].append(f"'*' method not found in user authz for {required_service}")
+                is_guppy_admin = False
+            else:
+                output['logs'].append(f"HAS SERVICE read-storage on resource {required_service}")
+
+    return is_guppy_admin
+
+
 def _can_create(output: dict,
                 program: str,
                 project: str,
@@ -417,53 +462,6 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
-
-
-
-def _is_guppy_admin(output: dict,
-              program: str,
-              project: str,
-              user: dict) -> bool:
-    """
-    For checking /guppy_admin permissions.
-    Check if user has '*' method on service 'guppy'
-
-    Args:
-        output: output dict the json that will be returned to the caller
-        program: program Gen3 program(-project)
-        project: project Gen3 (program-)project
-        user: user dict from arborist (aka profile)
-    """
-
-    is_guppy_admin = True
-
-    required_resources = [
-        "/guppy_admin",
-    ]
-    for required_resource in required_resources:
-        if required_resource not in user['resources']:
-            output['logs'].append(f"{required_resource} not found in user resources")
-            is_guppy_admin = False
-        else:
-            output['logs'].append(f"HAS RESOURCE {required_resource}")
-
-    required_services = [
-        "/guppy_admin"
-    ]
-    for required_service in required_services:
-        if required_service not in user['authz']:
-            output['logs'].append(f"{required_service} not found in user authz")
-            is_guppy_admin = False
-        else:
-            if {'method': '*', 'service': "guppy"} not in user['authz'][required_service]:
-                output['logs'].append(f"'*' method not found in user authz for {required_service}")
-                is_guppy_admin = False
-            else:
-                output['logs'].append(f"HAS SERVICE read-storage on resource {required_service}")
-
-    return is_guppy_admin
-
 
 def _can_read(output: dict,
               program: str,
