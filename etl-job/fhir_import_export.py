@@ -368,7 +368,7 @@ def _put(hostname: str,
                 "Content-Type": "application/json"
             }
             try:
-                response = requests.post(f"{hostname}/_refresh", headers=headers)
+                response = requests.post(f"{hostname}/guppy/_refresh", headers=headers)
                 response.raise_for_status()
                 logging.info(f"Guppy Refresh response:  {response}")
                 output["logs"].append(f"Guppy Refresh response:  {response}")
