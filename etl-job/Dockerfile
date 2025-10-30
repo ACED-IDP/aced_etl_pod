@@ -40,9 +40,11 @@ RUN source venv/bin/activate && pip install "aced-submission==0.0.10rc18"
 RUN source venv/bin/activate && pip install "fhir.resources==7.1.0"
 
 COPY --from=go-builder /go/bin/forge /usr/local/bin/forge
+COPY --from=go-builder /go/bin/git-drs /usr/local/bin/git-drs
 ENV PATH="/usr/local/bin:$PATH"
 
 RUN ls -la /usr/local/bin/forge
+RUN ls -la /usr/local/bin/git-drs
 
 COPY . /root
 RUN chmod +x /root/entrypoint.sh
