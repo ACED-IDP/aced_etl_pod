@@ -5,6 +5,7 @@ import pathlib
 import sys
 import traceback
 import subprocess
+import requests
 
 import inflection
 import shutil
@@ -354,18 +355,31 @@ def _put(hostname: str,
             if not _run_subprocess(mv_cmd, target_dir, output, f"ERROR MOVING {file}"):
                 return False
 
+        load_success = False
         if success:
             found_files = [str(p) for p in load_path.glob('*')]
             output['files'].extend(found_files)
             logging.info(f"Found files: {found_files}")
-            _load_all(hostname, program, project, output, load_path, "work")
+            load_success = _load_all(hostname, program, project, output, load_path, "work")
+
+        if load_success && _is_guppy_admin(output, program, project, user):
+            headers = {
+                "Authorization": f"bearer {_get_env_var('ACCESS_TOKEN')}",
+                "Content-Type": "application/json"
+            }
+            try:
+                response = requests.post(f"{hostname}/_refresh", headers=headers)
+                response.raise_for_status()
+                logging.info(f"Guppy Refresh response:  {response}")
+                output["logs"].append(f"Guppy Refresh response:  {response}")
+            except requests.exceptions.RequestException as err:
+                print(f"An unexpected error occurred: {err}")
+
 
         if load_path.exists():
             shutil.rmtree(load_path)
             logging.info(f"Cleaned up directory: {load_path}")
 
-        for index in INDEX_NAMES:
-            meta_flat_delete(project_id=f"{program}-{project}", index=index)
         output['logs'].append(f"EMPTIED flat for {program}-{project}")
 
     except Exception as e:
@@ -404,6 +418,51 @@ def main() -> None:
 if __name__ == '__main__':
     main()
 
+
+
+
+def _is_guppy_admin(output: dict,
+              program: str,
+              project: str,
+              user: dict) -> bool:
+    """
+    For checking /guppy_admin permissions.
+    Check if user has '*' method on service 'guppy'
+
+    Args:
+        output: output dict the json that will be returned to the caller
+        program: program Gen3 program(-project)
+        project: project Gen3 (program-)project
+        user: user dict from arborist (aka profile)
+    """
+
+    is_guppy_admin = True
+
+    required_resources = [
+        "/guppy_admin",
+    ]
+    for required_resource in required_resources:
+        if required_resource not in user['resources']:
+            output['logs'].append(f"{required_resource} not found in user resources")
+            is_guppy_admin = False
+        else:
+            output['logs'].append(f"HAS RESOURCE {required_resource}")
+
+    required_services = [
+        "/guppy_admin"
+    ]
+    for required_service in required_services:
+        if required_service not in user['authz']:
+            output['logs'].append(f"{required_service} not found in user authz")
+            is_guppy_admin = False
+        else:
+            if {'method': '*', 'service': "guppy"} not in user['authz'][required_service]:
+                output['logs'].append(f"'*' method not found in user authz for {required_service}")
+                is_guppy_admin = False
+            else:
+                output['logs'].append(f"HAS SERVICE read-storage on resource {required_service}")
+
+    return is_guppy_admin
 
 
 def _can_read(output: dict,
