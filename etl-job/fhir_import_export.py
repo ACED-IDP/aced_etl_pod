@@ -362,7 +362,7 @@ def _put(hostname: str,
             logging.info(f"Found files: {found_files}")
             load_success = _load_all(hostname, program, project, output, load_path, "work")
 
-        if load_success && _is_guppy_admin(output, program, project, user):
+        if load_success and _is_guppy_admin(output, program, project, user):
             headers = {
                 "Authorization": f"bearer {_get_env_var('ACCESS_TOKEN')}",
                 "Content-Type": "application/json"
