@@ -17,12 +17,14 @@ from aced_submission.grip_load import bulk_load_raw, get_project_data, \
 from opensearchpy import OpenSearchException
 from gen3.auth import Gen3Auth
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Boolean
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 # Define the keys in one place at the top of the file
 INDEX_NAMES = ["research_subject", "specimen", "document_reference", "medication_administration", "group_member"]
+META_DIR = "META"
+CONFIG_DIR = "CONFIG"
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
@@ -140,6 +142,51 @@ def _can_create(output: dict,
 
     return can_create
 
+
+def _process_config_files(target_dir:str, output:dict, hostname: str) -> Boolean:
+    config_dir_path = os.path.join(target_dir, CONFIG_DIR)
+    os.makedirs(config_dir_path, exist_ok=True)
+
+    for file in [f for f in os.listdir(config_dir_path) if f.endswith(".json")]:
+        if not file.endswith(".json"):
+            continue
+
+        base_name = file[:-5] # Removes the last 5 characters (".json")
+        if base_name.count('-') != 1:
+            output['logs'].append(f"SKIPPING: File {file} does not contain exactly one hyphen.")
+            continue
+
+        parts = base_name.split('-', 1)
+        program = parts[0]
+        project = parts[1]
+        if not program or not project:
+            output['logs'].append(f"SKIPPING: File {file} has an empty program or project name.")
+            continue
+
+        config_file_full_path = os.path.join(CONFIG_DIR, file)
+        pull_cmd = ["git-lfs", "pull", "-I", config_file_full_path]
+        if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file}"):
+            return False
+
+        output['logs'].append(f"DOWNLOADED {file}")
+        headers = {
+            "Authorization": f"bearer {_get_env_var('ACCESS_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+        try:
+            # This needs to be in the format of program-project. If you specify a program - project that you don't have
+            # access to, this will return 401
+            response = requests.put(f"{hostname}/ExplorerConfig/explorer/{base_name}", headers=headers)
+            response.raise_for_status()
+            logging.info(f"ExplorerConfig response: {response}")
+            output["logs"].append(f"ExplorerConfig response: {response.status_code}")
+        except requests.exceptions.RequestException as err:
+            print(f"An unexpected error occurred: {err}")
+            output["logs"].append(f"ERROR UPLOADING {file}: {err}")
+            return False
+
+    return True
+
 def _download_and_unzip(gh_username: str,
                         gh_token: str,
                         gh_repo_url: str,
@@ -168,10 +215,10 @@ def _download_and_unzip(gh_username: str,
         if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING forge for {gh_repo_url}"):
             return False
 
-        meta_dir_path = os.path.join(target_dir, "META")
+        meta_dir_path = os.path.join(target_dir, META_DIR)
         os.makedirs(meta_dir_path, exist_ok=True)
-        for file in [f for f in os.listdir(os.path.join(target_dir, "META")) if f.endswith(".ndjson")]:
-            meta_dir = os.path.join("META", file)
+        for file in [f for f in os.listdir(os.path.join(target_dir, META_DIR)) if f.endswith(".ndjson")]:
+            meta_dir = os.path.join(META_DIR, file)
             pull_cmd = ["git-lfs", "pull", "-I", meta_dir]
             if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file}"):
                 return False
@@ -394,11 +441,16 @@ def _put(hostname: str,
         if not _run_subprocess(meta_init_cmd, target_dir, output, f"ERROR RUNNING FORGE META INIT FOR PROJECT {program}-{project}"):
             return False
 
-        for file in [f for f in os.listdir(os.path.join(target_dir, "META")) if f.endswith(".ndjson")]:
-            meta_dir = os.path.join("META", file)
+        for file in [f for f in os.listdir(os.path.join(target_dir, META_DIR)) if f.endswith(".ndjson")]:
+            meta_dir = os.path.join(META_DIR, file)
             mv_cmd = ["mv", meta_dir, str(load_path)]
             if not _run_subprocess(mv_cmd, target_dir, output, f"ERROR MOVING {file}"):
                 return False
+
+        if not _process_config_files(target_dir, output, hostname):
+            return False
+
+
 
         load_success = False
         if success:
