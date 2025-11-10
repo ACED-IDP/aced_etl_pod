@@ -17,7 +17,7 @@ from aced_submission.grip_load import bulk_load_raw, get_project_data, \
 from opensearchpy import OpenSearchException
 from gen3.auth import Gen3Auth
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
-from typing import List, Dict, Any, Tuple, Optional, Boolean
+from typing import List, Dict, Any, Tuple, Optional
 
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
@@ -143,7 +143,7 @@ def _can_create(output: dict,
     return can_create
 
 
-def _process_config_files(target_dir:str, output:dict, hostname: str) -> Boolean:
+def _process_config_files(target_dir:str, output:dict, hostname: str) -> bool:
     config_dir_path = os.path.join(target_dir, CONFIG_DIR)
     os.makedirs(config_dir_path, exist_ok=True)
 
