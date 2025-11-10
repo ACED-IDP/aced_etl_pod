@@ -168,6 +168,14 @@ def _process_config_files(target_dir:str, output:dict, hostname: str) -> bool:
         if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file}"):
             return False
 
+        try:
+            with open(config_file_full_path, 'r') as f:
+                # Read the file content to be used as the request body
+                file_content = f.read()
+        except IOError as err:
+            output["logs"].append(f"ERROR READING FILE {file}: {err}")
+            return False
+
         output['logs'].append(f"DOWNLOADED {file}")
         headers = {
             "Authorization": f"bearer {_get_env_var('ACCESS_TOKEN')}",
@@ -176,7 +184,7 @@ def _process_config_files(target_dir:str, output:dict, hostname: str) -> bool:
         try:
             # This needs to be in the format of program-project. If you specify a program - project that you don't have
             # access to, this will return 401
-            response = requests.put(f"{hostname}/ExplorerConfig/explorer/{base_name}", headers=headers)
+            response = requests.put(f"{hostname}/ExplorerConfig/explorer/{base_name}", headers=headers, data=file_content)
             response.raise_for_status()
             logging.info(f"ExplorerConfig response: {response}")
             output["logs"].append(f"ExplorerConfig response: {response.status_code}")
