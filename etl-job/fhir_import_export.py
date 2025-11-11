@@ -142,15 +142,21 @@ def _can_create(output: dict,
 
     return can_create
 
+def _process_config_files(target_dir: str, output: dict, hostname: str) -> bool:
+    """
+    Processes configuration files located in the CONFIG_DIR of the target directory.
+    Assumes LFS files have already been pulled. Reads content and uploads to the ExplorerConfig API.
+    """
 
-def _process_config_files(target_dir:str, output:dict, hostname: str) -> bool:
     config_dir_path = os.path.join(target_dir, CONFIG_DIR)
-    os.makedirs(config_dir_path, exist_ok=True)
+    config_path = pathlib.Path(config_dir_path)
 
-    for file in [f for f in os.listdir(config_dir_path) if f.endswith(".json")]:
-        if not file.endswith(".json"):
-            continue
+    if not config_path.exists():
+        output['logs'].append(f"INFO: Config directory not found at {config_dir_path}. Skipping config processing.")
+        return True # Not a critical error if no configs exist
 
+    config_files = [f for f in os.listdir(config_path) if f.endswith(".json")]
+    for file in config_files:
         base_name = file[:-5] # Removes the last 5 characters (".json")
         if base_name.count('-') != 1:
             output['logs'].append(f"SKIPPING: File {file} does not contain exactly one hyphen.")
@@ -163,27 +169,20 @@ def _process_config_files(target_dir:str, output:dict, hostname: str) -> bool:
             output['logs'].append(f"SKIPPING: File {file} has an empty program or project name.")
             continue
 
-        config_file_full_path = os.path.join(CONFIG_DIR, file)
-        pull_cmd = ["git-lfs", "pull", "-I", config_file_full_path]
-        if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file}"):
-            return False
-
+        full_file_path = config_path / file
         try:
-            with open(config_file_full_path, 'r') as f:
+            with open(full_file_path, 'r') as f:
                 # Read the file content to be used as the request body
                 file_content = f.read()
         except IOError as err:
             output["logs"].append(f"ERROR READING FILE {file}: {err}")
             return False
 
-        output['logs'].append(f"DOWNLOADED {file}")
         headers = {
             "Authorization": f"bearer {_get_env_var('ACCESS_TOKEN')}",
             "Content-Type": "application/json"
         }
         try:
-            # This needs to be in the format of program-project. If you specify a program - project that you don't have
-            # access to, this will return 401
             response = requests.put(f"{hostname}/ExplorerConfig/explorer/{base_name}", headers=headers, data=file_content)
             response.raise_for_status()
             logging.info(f"ExplorerConfig response: {response}")
@@ -195,6 +194,7 @@ def _process_config_files(target_dir:str, output:dict, hostname: str) -> bool:
 
     return True
 
+
 def _download_and_unzip(gh_username: str,
                         gh_token: str,
                         gh_repo_url: str,
@@ -205,7 +205,7 @@ def _download_and_unzip(gh_username: str,
                         output: Dict[str, Any],
                         dest_dir: pathlib.Path) -> bool | None:
     """
-    Download and unzip META objects from Git LFS to a destination directory for loading.
+    Download META and CONFIG objects from Git LFS to the repository directory.
     """
     try:
         repo_name = pathlib.Path(gh_repo_url).stem
@@ -225,12 +225,23 @@ def _download_and_unzip(gh_username: str,
 
         meta_dir_path = os.path.join(target_dir, META_DIR)
         os.makedirs(meta_dir_path, exist_ok=True)
-        for file in [f for f in os.listdir(os.path.join(target_dir, META_DIR)) if f.endswith(".ndjson")]:
-            meta_dir = os.path.join(META_DIR, file)
-            pull_cmd = ["git-lfs", "pull", "-I", meta_dir]
-            if not _run_subprocess(pull_cmd, target_dir, output, f"ERROR PULLING FILE {file}"):
-                return False
-            output['logs'].append(f"DOWNLOADED {file}")
+        meta_files_to_pull = [os.path.join(META_DIR, f) for f in os.listdir(meta_dir_path) if f.endswith(".ndjson")]
+
+        if meta_files_to_pull:
+            for file in meta_files_to_pull:
+                if not _run_subprocess( ["git-lfs", "pull", "-I", file], target_dir, output, "ERROR PULLING META FILES with git-lfs"):
+                    return False
+                output['logs'].append(f"DOWNLOADED {file}")
+
+        config_dir_path = os.path.join(target_dir, CONFIG_DIR)
+        if os.path.exists(config_dir_path):
+            config_files_to_pull = [os.path.join(CONFIG_DIR, f) for f in os.listdir(config_dir_path) if f.endswith(".json")]
+
+            if config_files_to_pull:
+                for file in config_files_to_pull:
+                    if not _run_subprocess( ["git-lfs", "pull", "-I", file], target_dir, output, "ERROR PULLING CONFIG FILES with git-lfs"):
+                        return False
+                    output['logs'].append(f"DOWNLOADED {file}")
 
         return True
 
@@ -455,6 +466,7 @@ def _put(hostname: str,
             if not _run_subprocess(mv_cmd, target_dir, output, f"ERROR MOVING {file}"):
                 return False
 
+        # Nuke the whole ETL job if the config push doesn't work. -- controversial maybe not do this.
         if not _process_config_files(target_dir, output, hostname):
             return False
 
