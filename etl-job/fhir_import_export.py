@@ -219,8 +219,12 @@ def _download_and_unzip(gh_username: str,
         if not _run_subprocess(checkout_cmd, target_dir, output, f"ERROR CHECKING OUT for {gh_repo_url} ON HASH {gh_commit_hash}"):
             return False
 
-        init_cmd = ["forge", "init", "--bucket", bucket, "--token", _get_env_var('ACCESS_TOKEN'), "--profile", profile, "--project", project_id]
+        init_cmd = ["git-drs", "init"]
         if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING forge for {gh_repo_url}"):
+            return False
+
+        init_cmd = ["git-drs", "remote","add","gen3",profile, "--bucket", bucket, "--token", _get_env_var('ACCESS_TOKEN'),"--project", project_id]
+        if not _run_subprocess(init_cmd, target_dir, output, f"ERROR Adding Ref {profile} in git-drs for {gh_repo_url}"):
             return False
 
         meta_dir_path = os.path.join(target_dir, META_DIR)
@@ -469,8 +473,6 @@ def _put(hostname: str,
         # Nuke the whole ETL job if the config push doesn't work. -- controversial maybe not do this.
         if not _process_config_files(target_dir, output, hostname):
             return False
-
-
 
         load_success = False
         if success:

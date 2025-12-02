@@ -1,7 +1,7 @@
 FROM golang:1.24.2-bookworm AS go-builder
 
-RUN go install github.com/calypr/forge@eab4a8db338ebd379f0ee1291af81d31acb14e60
-RUN go install github.com/calypr/git-drs@v0.0.0-20251014201703-c83676369df6
+RUN go install github.com/calypr/forge@8cc3a186bebbb0a28a3cac3bf3bb8f094587add4
+RUN go install github.com/calypr/git-drs@377c483d9fc0e20a71558c99cd9faf8985c54e41
 
 
 FROM python:3.12-bookworm
