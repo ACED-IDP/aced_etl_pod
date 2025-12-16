@@ -237,7 +237,7 @@ def _download_and_unzip(gh_username: str,
 
         if meta_files_to_pull:
             for file in meta_files_to_pull:
-                if not _run_subprocess( ["git-lfs", "pull", "-I", file], target_dir, output, "ERROR PULLING META FILES with git-lfs"):
+                if not _run_subprocess( ["git-lfs", "pull", profile, "-I", file], target_dir, output, "ERROR PULLING META FILES with git-lfs"):
                     return False
                 output['logs'].append(f"DOWNLOADED {file}")
 
@@ -247,7 +247,7 @@ def _download_and_unzip(gh_username: str,
 
             if config_files_to_pull:
                 for file in config_files_to_pull:
-                    if not _run_subprocess( ["git-lfs", "pull", "-I", file], target_dir, output, "ERROR PULLING CONFIG FILES with git-lfs"):
+                    if not _run_subprocess( ["git-lfs", "pull", profile, "-I", file], target_dir, output, "ERROR PULLING CONFIG FILES with git-lfs"):
                         return False
                     output['logs'].append(f"DOWNLOADED {file}")
 
@@ -464,8 +464,7 @@ def _put(hostname: str,
         target_dir = os.path.join(os.getcwd(), repo_name)
         load_path = pathlib.Path(f"/root/repo/{project}")
 
-        meta_init_cmd = ["forge", "meta", "init"]
-        if not _run_subprocess(meta_init_cmd, target_dir, output, f"ERROR RUNNING FORGE META INIT FOR PROJECT {program}-{project}"):
+        if not _run_subprocess(["forge", "meta", validated_data['profile']], target_dir, output, f"ERROR RUNNING FORGE META INIT FOR PROJECT {program}-{project}"):
             return False
 
         for file in [f for f in os.listdir(os.path.join(target_dir, META_DIR)) if f.endswith(".ndjson")]:
