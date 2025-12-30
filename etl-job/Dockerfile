@@ -28,7 +28,7 @@ WORKDIR /root
 SHELL ["/bin/bash", "-c"]
 RUN python3 -m venv venv
 RUN source venv/bin/activate && pip install --upgrade pip && pip install wheel
-RUN mkdir ~/.gen3
+RUN mkdir -p /root/.gen3 && touch /root/.gen3/gen3_client_config.ini
 
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/usr/local/bin:$PATH"
