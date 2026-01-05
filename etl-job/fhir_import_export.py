@@ -219,9 +219,10 @@ def _download_and_unzip(gh_username: str,
         if not _run_subprocess(checkout_cmd, target_dir, output, f"ERROR CHECKING OUT for {gh_repo_url} ON HASH {gh_commit_hash}"):
             return False
 
-        checkout_cmd = ["git", "remote", "rename", "origin", profile]
-        if not _run_subprocess(checkout_cmd, target_dir, output, f"ERROR renaming remote for {gh_repo_url} for profile: {profile}"):
-            return False
+        if profile != "origin":
+            checkout_cmd = ["git", "remote", "rename", "origin", profile]
+            if not _run_subprocess(checkout_cmd, target_dir, output, f"ERROR renaming remote for {gh_repo_url} for profile: {profile}"):
+                return False
 
         init_cmd = ["git-drs", "init"]
         if not _run_subprocess(init_cmd, target_dir, output, f"ERROR INITIALIZING forge for {gh_repo_url}"):
