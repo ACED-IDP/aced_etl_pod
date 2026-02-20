@@ -1,16 +1,4 @@
-# Workflow for building the ACED ETL image and pushing it to the quay.io repository
-#
-# Optionally debug via SSH
-# Ref: https://fleetdm.com/engineering/tips-for-github-actions-usability
-#
-# To use this step uncomment and place anywhere in the build steps. The build will pause on this step and
-# output a ssh address associated with the Github action worker. Helpful for debugging build steps and
-# and intermediary files/artifacts.
-#
-# - name: Setup tmate session
-#   uses: mxschmitt/action-tmate@v3
-
-name: Build and publish ACED ETL image
+name: Build and publish CALYPR ETL image
 
 on:
   push:
@@ -23,6 +11,14 @@ jobs:
     - name: Check out code
       uses: actions/checkout@v2
 
+    # Required to simulate different architectures (e.g., ARM on AMD64 runner)
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+
+    # Required to use the 'docker buildx' command
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
     - name: Login to Quay.io
       uses: docker/login-action@v2
       with:
@@ -30,21 +26,25 @@ jobs:
         username: ${{ secrets.QUAY_USERNAME }}
         password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 
-    - name: Build and push image
+    - name: Extract Metadata (Tags/Labels)
+      id: meta
       run: |
-        # Set Image tag to the branch name
+        # Calculate the branch-based tag
         BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
         REPO=quay.io/ohsu-comp-bio/aced-etl
-        echo "Setting image tag to $REPO:$BRANCH"
-
-        # Login to Quay.io and build image
-        docker login quay.io
-        docker build -t $REPO:$BRANCH ./etl-job
         
-        # Add 'latest' tag to 'main' image
+        # Prepare the tag list
+        TAGS="$REPO:$BRANCH"
         if [[ $BRANCH == 'main' ]]; then
-          docker image tag $REPO:main $REPO:latest
+          TAGS="$TAGS,$REPO:latest"
         fi
+        echo "::set-output name=tags::$TAGS"
 
-        # Push the tagged image to Quay.io
-        docker push --all-tags $REPO
+    - name: Build and push image
+      uses: docker/build-push-action@v4
+      with:
+        context: ./etl-job
+        # Define the architectures you want to support here:
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
