@@ -18,7 +18,11 @@ from gen3.auth import Gen3Auth
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 from opensearchpy import OpenSearchException
 
-logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 
 # Define the keys in one place at the top of the file
 INDEX_NAMES = [
@@ -31,7 +35,7 @@ INDEX_NAMES = [
 META_DIR = "META"
 CONFIG_DIR = "CONFIG"
 
-logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+
 
 
 def _get_env_var(key: str, error_msg: Optional[str] = None) -> Optional[str]:
