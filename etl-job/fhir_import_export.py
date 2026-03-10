@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 import inflection
@@ -238,7 +239,9 @@ def _download_and_unzip(
         repo_name = pathlib.Path(gh_repo_url).stem
         target_dir = os.path.join(os.getcwd(), repo_name)
 
-        clone_url = f"https://{gh_username}:{gh_token}@{gh_repo_url}"
+        encoded_user = urllib.parse.quote(gh_username)
+        encoded_token = urllib.parse.quote(gh_token)
+        clone_url = f"https://{encoded_user}:{encoded_token}@{gh_repo_url}"
         if not _run_subprocess(
             ["git", "clone", clone_url],
             os.getcwd(),
@@ -471,22 +474,33 @@ def _empty_project(
 def _run_subprocess(
     cmd: List[str], cwd: str, output: Dict[str, Any], error_msg: str
 ) -> bool:
-    """Run subprocess command and handle errors."""
+    """Run subprocess command and stream output to logs in real-time."""
     try:
-        result = subprocess.run(
-            cmd, cwd=cwd, check=True, capture_output=True, text=True
-        )
-        logging.info(f"Successfully ran command: {' '.join(cmd)}")
-        if result.stdout:
-            output["logs"].append(f"STDOUT: {result.stdout.strip()}")
-        if result.stderr:
-            output["logs"].append(f"STDERR: {result.stderr.strip()}")
+        logging.info(f"Running command: {' '.join(cmd)}")
+        with subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        ) as proc:
+            if proc.stdout:
+                for line in proc.stdout:
+                    line = line.strip()
+                    if line:
+                        # Log immediately to the pod's stdout
+                        logging.info(f"[{cmd[0]}] {line}")
+                        # Also keep in the final output dictionary
+                        output["logs"].append(line)
+            
+            return_code = proc.wait()
+            if return_code != 0:
+                detailed_error = f"{error_msg}. Command failed with return code {return_code}."
+                _handle_error(output, detailed_error, RuntimeError)
+                return False
         return True
-    except subprocess.CalledProcessError as e:
-        detailed_error = f"{error_msg}. Command failed with return code {e.returncode}."
-        if e.stderr:
-            detailed_error += f"\nGit Error Details:\n{e.stderr.strip()}"
-        _handle_error(output, detailed_error, subprocess.CalledProcessError)
     except FileNotFoundError:
         _handle_error(output, f"Command not found: {cmd[0]}", FileNotFoundError)
     except Exception as e:
