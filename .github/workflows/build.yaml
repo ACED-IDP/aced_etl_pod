@@ -1,15 +1,3 @@
-# Workflow for building the ACED ETL image and pushing it to the quay.io repository
-#
-# Optionally debug via SSH
-# Ref: https://fleetdm.com/engineering/tips-for-github-actions-usability
-#
-# To use this step uncomment and place anywhere in the build steps. The build will pause on this step and
-# output a ssh address associated with the Github action worker. Helpful for debugging build steps and
-# and intermediary files/artifacts.
-#
-# - name: Setup tmate session
-#   uses: mxschmitt/action-tmate@v3
-
 name: Build and publish ACED ETL image
 
 on:
@@ -18,33 +6,66 @@ on:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            # Using the native ARM runner label
+            runner: ubuntu-24.04-arm 
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v2
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+
+      - name: Build and Push Architecture-Specific Image
+        id: build
+        run: |
+          BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
+          REPO=quay.io/ohsu-comp-bio/aced-etl
+          # We tag it with the architecture suffix (e.g., :main-arm64)
+          TAG="$REPO:$BRANCH-${{ matrix.arch }}"
+          
+          docker build -t $TAG ./etl-job
+          docker push $TAG
+          
+          # Pass the tag to the next job
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  # New job to create the "Manifest List" (the thing that points to both)
+  create-manifest:
+    needs: build
     runs-on: ubuntu-latest
     steps:
-    - name: Check out code
-      uses: actions/checkout@v2
+      - name: Login to Quay.io
+        uses: docker/login-action@v2
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 
-    - name: Login to Quay.io
-      uses: docker/login-action@v2
-      with:
-        registry: quay.io
-        username: ${{ secrets.QUAY_USERNAME }}
-        password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+      - name: Create and Push Multi-Arch Manifest
+        run: |
+          BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
+          REPO=quay.io/ohsu-comp-bio/aced-etl
+          
+          # Create the manifest pointing to both specific images
+          docker manifest create $REPO:$BRANCH \
+            $REPO:$BRANCH-amd64 \
+            $REPO:$BRANCH-arm64
+          
+          docker manifest push $REPO:$BRANCH
 
-    - name: Build and push image
-      run: |
-        # Set Image tag to the branch name
-        BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
-        REPO=quay.io/ohsu-comp-bio/aced-etl
-        echo "Setting image tag to $REPO:$BRANCH"
-
-        # Login to Quay.io and build image
-        docker login quay.io
-        docker build -t $REPO:$BRANCH ./etl-job
-        
-        # Add 'latest' tag to 'main' image
-        if [[ $BRANCH == 'main' ]]; then
-          docker image tag $REPO:main $REPO:latest
-        fi
-
-        # Push the tagged image to Quay.io
-        docker push --all-tags $REPO
+          # Add 'latest' tag if on main branch
+          if [[ $BRANCH == 'main' ]]; then
+            docker manifest create $REPO:latest $REPO:main-amd64 $REPO:main-arm64
+            docker manifest push $REPO:latest
+          fi
