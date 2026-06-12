@@ -161,7 +161,7 @@ def _can_create(output: dict, program: str, project: str, user: dict) -> bool:
 def _process_config_files(target_dir: str, output: dict, hostname: str) -> bool:
     """
     Processes configuration files located in the CONFIG_DIR of the target directory.
-    Assumes LFS files have already been pulled. Reads content and uploads to the ExplorerConfig API.
+    Assumes git-drs pointer files have already been hydrated. Reads content and uploads to the ExplorerConfig API.
     """
 
     config_dir_path = os.path.join(target_dir, CONFIG_DIR)
@@ -233,7 +233,7 @@ def _download_and_unzip(
     dest_dir: pathlib.Path,
 ) -> bool | None:
     """
-    Download META and CONFIG objects from Git LFS to the repository directory.
+    Hydrate META and CONFIG pointer files from git-drs into the repository directory.
     """
     try:
         repo_name = pathlib.Path(gh_repo_url).stem
@@ -305,14 +305,15 @@ def _download_and_unzip(
         ]
 
         if meta_files_to_pull:
+            if not _git_drs_pull_files(
+                profile,
+                meta_files_to_pull,
+                target_dir,
+                output,
+                "ERROR PULLING META FILES with git-drs",
+            ):
+                return False
             for file in meta_files_to_pull:
-                if not _run_subprocess(
-                    ["git-lfs", "pull", profile, "-I", file],
-                    target_dir,
-                    output,
-                    "ERROR PULLING META FILES with git-lfs",
-                ):
-                    return False
                 output["logs"].append(f"DOWNLOADED {file}")
 
         config_dir_path = os.path.join(target_dir, CONFIG_DIR)
@@ -324,14 +325,15 @@ def _download_and_unzip(
             ]
 
             if config_files_to_pull:
+                if not _git_drs_pull_files(
+                    profile,
+                    config_files_to_pull,
+                    target_dir,
+                    output,
+                    "ERROR PULLING CONFIG FILES with git-drs",
+                ):
+                    return False
                 for file in config_files_to_pull:
-                    if not _run_subprocess(
-                        ["git-lfs", "pull", profile, "-I", file],
-                        target_dir,
-                        output,
-                        "ERROR PULLING CONFIG FILES with git-lfs",
-                    ):
-                        return False
                     output["logs"].append(f"DOWNLOADED {file}")
 
         return True
@@ -506,6 +508,20 @@ def _run_subprocess(
     except Exception as e:
         _handle_error(output, f"An unexpected error occurred: {e}", Exception)
     return False
+
+
+def _git_drs_pull_files(
+    profile: str,
+    files: List[str],
+    cwd: str,
+    output: Dict[str, Any],
+    error_msg: str,
+) -> bool:
+    """Hydrate selected pointer files with git-drs."""
+    cmd = ["git-drs", "pull", profile]
+    for file in files:
+        cmd.extend(["-I", file])
+    return _run_subprocess(cmd, cwd, output, error_msg)
 
 
 def _write_output_to_client(output):
