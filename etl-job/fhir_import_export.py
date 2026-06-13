@@ -405,22 +405,21 @@ def _load_all(
             access_token=_get_env_var("ACCESS_TOKEN"),
         )
 
-        for file in file_path.rglob("*"):
-            if file.suffix in [".ndjson", ".json"]:
-                status = bulk_load_raw(
-                    hostname,
-                    _get_env_var("GRIP_GRAPH_NAME"),
-                    project_id,
-                    str(file),
-                    output,
-                    _get_env_var("ACCESS_TOKEN"),
+        for file in file_path.rglob("*.ndjson"):
+            status = bulk_load_raw(
+                hostname,
+                _get_env_var("GRIP_GRAPH_NAME"),
+                project_id,
+                str(file),
+                output,
+                _get_env_var("ACCESS_TOKEN"),
+            )
+            output["logs"].append(status)
+            logging.info(f"bulk_load_raw return status {status}")
+            if status["status"] != 200:
+                raise Exception(
+                    f"Critical Error load of file {file} returned non 200 status {status['status']}"
                 )
-                output["logs"].append(status)
-                logging.info(f"bulk_load_raw return status {status}")
-                if status["status"] != 200:
-                    raise Exception(
-                        f"Critical Error load of file {file} returned non 200 status {status['status']}"
-                    )
 
         if not work_path.exists():
             raise ValueError(f"Directory {work_path} does not exist.")
