@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -35,8 +36,8 @@ INDEX_NAMES = [
 ]
 META_DIR = "META"
 CONFIG_DIR = "CONFIG"
-
-
+REQUEST_TIMEOUT_SECONDS = 30
+SENSITIVE_KEYS = {"ghToken", "ACCESS_TOKEN", "authorization", "token"}
 
 
 def _get_env_var(key: str, error_msg: Optional[str] = None) -> Optional[str]:
@@ -45,6 +46,38 @@ def _get_env_var(key: str, error_msg: Optional[str] = None) -> Optional[str]:
     if value is None:
         raise ValueError(error_msg)
     return value
+
+
+def _redact_value(value: Any) -> Any:
+    """Redact secrets before logging or returning payloads."""
+    if isinstance(value, dict):
+        return {
+            k: ("***REDACTED***" if k in SENSITIVE_KEYS else _redact_value(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    if isinstance(value, str):
+        value = re.sub(r"(https://[^:\s]+:)[^@\s]+@", r"\1***REDACTED***@", value)
+        value = re.sub(r"(bearer\s+)[^\s]+", r"\1***REDACTED***", value, flags=re.IGNORECASE)
+    return value
+
+
+def _sanitize_command_for_logging(cmd: List[str]) -> List[str]:
+    """Redact sensitive command arguments before logging."""
+    sanitized: List[str] = []
+    redact_next = False
+    for part in cmd:
+        if redact_next:
+            sanitized.append("***REDACTED***")
+            redact_next = False
+            continue
+        if part == "--token":
+            sanitized.append(part)
+            redact_next = True
+            continue
+        sanitized.append(_redact_value(part))
+    return sanitized
 
 
 def _auth(access_token: Optional[str]) -> Gen3Auth:
@@ -209,6 +242,7 @@ def _process_config_files(target_dir: str, output: dict, hostname: str) -> bool:
                 f"{hostname}/ExplorerConfig/explorer/{base_name}",
                 headers=headers,
                 data=file_content,
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             logging.info(f"ExplorerConfig response: {response}")
@@ -228,7 +262,7 @@ def _download_and_unzip(
     gh_commit_hash: str,
     bucket: str,
     profile: str,
-    project_id: str,
+    project_scope: str,
     output: Dict[str, Any],
     dest_dir: pathlib.Path,
 ) -> bool | None:
@@ -237,14 +271,16 @@ def _download_and_unzip(
     """
     try:
         repo_name = pathlib.Path(gh_repo_url).stem
-        target_dir = os.path.join(os.getcwd(), repo_name)
+        workspace_dir = dest_dir.parent
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = os.path.join(workspace_dir, repo_name)
 
         encoded_user = urllib.parse.quote(gh_username)
         encoded_token = urllib.parse.quote(gh_token)
         clone_url = f"https://{encoded_user}:{encoded_token}@{gh_repo_url}"
         if not _run_subprocess(
             ["git", "clone", clone_url],
-            os.getcwd(),
+            str(workspace_dir),
             output,
             f"ERROR CLONING {gh_repo_url}",
         ):
@@ -281,12 +317,11 @@ def _download_and_unzip(
             "add",
             "gen3",
             profile,
+            project_scope,
             "--bucket",
             bucket,
             "--token",
             _get_env_var("ACCESS_TOKEN"),
-            "--project",
-            project_id,
         ]
         if not _run_subprocess(
             init_cmd,
@@ -478,7 +513,7 @@ def _run_subprocess(
 ) -> bool:
     """Run subprocess command and stream output to logs in real-time."""
     try:
-        logging.info(f"Running command: {' '.join(cmd)}")
+        logging.info(f"Running command: {' '.join(_sanitize_command_for_logging(cmd))}")
         with subprocess.Popen(
             cmd,
             cwd=cwd,
@@ -496,10 +531,12 @@ def _run_subprocess(
                         logging.info(f"[{cmd[0]}] {line}")
                         # Also keep in the final output dictionary
                         output["logs"].append(line)
-            
+
             return_code = proc.wait()
             if return_code != 0:
-                detailed_error = f"{error_msg}. Command failed with return code {return_code}."
+                detailed_error = (
+                    f"{error_msg}. Command failed with return code {return_code}."
+                )
                 _handle_error(output, detailed_error, RuntimeError)
                 return False
         return True
@@ -529,7 +566,7 @@ def _write_output_to_client(output):
     formats output as json to stdout so it is passed back to the client,
     most importantly to display relevant logs from the job erroring out
     """
-    logging.info(f"[out] {json.dumps(output, separators=(',', ':'))}")
+    logging.info(f"[out] {json.dumps(_redact_value(output), separators=(',', ':'))}")
 
 
 def _handle_error(
@@ -579,6 +616,8 @@ def _put(
         project (str): The project name.
         user (Dict[str, Any]): The user information.
     """
+    target_dir = None
+    load_path = pathlib.Path(f"/root/repo/{project}")
     try:
         if not _can_create(output, program, project, user):
             error_msg = (
@@ -589,7 +628,6 @@ def _put(
 
         validated_data = _validate_and_extract_input(input_data)
 
-        load_path = pathlib.Path(f"/root/repo/{project}")
         load_path.mkdir(parents=True, exist_ok=True)
 
         success = _download_and_unzip(
@@ -599,17 +637,22 @@ def _put(
             gh_commit_hash=validated_data["ghCommitHash"],
             bucket=validated_data["bucketName"],
             profile=validated_data["profile"],
-            project_id=f"{program}-{project}",
+            project_scope=f"{program}/{project}",
             output=output,
             dest_dir=load_path,
         )
 
         repo_name = pathlib.Path(validated_data["ghRepoUrl"]).stem
-        target_dir = os.path.join(os.getcwd(), repo_name)
-        load_path = pathlib.Path(f"/root/repo/{project}")
+        target_dir = os.path.join(load_path.parent, repo_name)
 
         if not _run_subprocess(
-            ["forge", "meta", validated_data["profile"]],
+            [
+                "forge",
+                "meta",
+                validated_data["profile"],
+                "--remote",
+                validated_data["profile"],
+            ],
             target_dir,
             output,
             f"ERROR RUNNING FORGE META INIT FOR PROJECT {program}-{project}",
@@ -622,8 +665,10 @@ def _put(
             if f.endswith(".ndjson")
         ]:
             meta_dir = os.path.join(META_DIR, file)
-            mv_cmd = ["mv", meta_dir, str(load_path)]
-            if not _run_subprocess(mv_cmd, target_dir, output, f"ERROR MOVING {file}"):
+            try:
+                shutil.move(os.path.join(target_dir, meta_dir), load_path / file)
+            except Exception as err:
+                _handle_error(output, f"ERROR MOVING {file}: {err}", Exception)
                 return False
 
         # Nuke the whole ETL job if the config push doesn't work. -- controversial maybe not do this.
@@ -645,21 +690,26 @@ def _put(
                 "Content-Type": "application/json",
             }
             try:
-                response = requests.post(f"{hostname}/guppy/_refresh", headers=headers)
+                response = requests.post(
+                    f"{hostname}/guppy/_refresh",
+                    headers=headers,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
                 response.raise_for_status()
                 logging.info(f"Guppy Refresh response:  {response}")
                 output["logs"].append(f"Guppy Refresh response:  {response}")
             except requests.exceptions.RequestException as err:
                 print(f"An unexpected error occurred: {err}")
 
-        if load_path.exists():
-            shutil.rmtree(load_path)
-            logging.info(f"Cleaned up directory: {load_path}")
-
         output["logs"].append(f"EMPTIED flat for {program}-{project}")
 
     except Exception as e:
         _handle_error(output, f"An unexpected error occurred in _put: {e}", Exception)
+    finally:
+        for path in [load_path, pathlib.Path(target_dir) if target_dir else None]:
+            if path and path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+                logging.info(f"Cleaned up directory: {path}")
 
 
 def main() -> None:
@@ -675,7 +725,9 @@ def main() -> None:
     user = _get_user(auth)
     output = {"user": user["email"], "files": [], "logs": []}
     input_data = _parse_input_data()
-    _write_output_to_client(input_data)
+    output["logs"].append(
+        f"Starting ETL method={input_data.get('method')} projectId={input_data.get('projectId')}"
+    )
     program, project = _get_program_project(input_data)
 
     method = input_data.get("method")
