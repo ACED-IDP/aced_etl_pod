@@ -194,7 +194,7 @@ def _can_create(output: dict, program: str, project: str, user: dict) -> bool:
 def _process_config_files(target_dir: str, output: dict, hostname: str) -> bool:
     """
     Processes configuration files located in the CONFIG_DIR of the target directory.
-    Assumes git-drs pointer files have already been hydrated. Reads content and uploads to the ExplorerConfig API.
+    Assumes git-drs pointer files have already been hydrated. Reads content and uploads to the Gecko explorer config API.
     """
 
     config_dir_path = os.path.join(target_dir, CONFIG_DIR)
@@ -239,14 +239,16 @@ def _process_config_files(target_dir: str, output: dict, hostname: str) -> bool:
         }
         try:
             response = requests.put(
-                f"{hostname}/ExplorerConfig/explorer/{base_name}",
+                f"{hostname}/gecko/explorer/{base_name}",
                 headers=headers,
                 data=file_content,
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
-            logging.info(f"ExplorerConfig response: {response}")
-            output["logs"].append(f"ExplorerConfig response: {response.status_code}")
+            logging.info(f"Gecko explorer config response: {response}")
+            output["logs"].append(
+                f"Gecko explorer config response: {response.status_code}"
+            )
         except requests.exceptions.RequestException as err:
             print(f"An unexpected error occurred: {err}")
             output["logs"].append(f"ERROR UPLOADING {file}: {err}")
