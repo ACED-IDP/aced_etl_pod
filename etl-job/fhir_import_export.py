@@ -12,13 +12,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import inflection
 import requests
-from aced_submission.grip_load import bulk_load_raw, get_project_data
-from aced_submission.grip_load import delete_project as grip_delete
 from aced_submission.meta_flat_load import DEFAULT_ELASTIC, load_flat
 from aced_submission.meta_flat_load import delete as meta_flat_delete
 from gen3.auth import Gen3Auth
 from gen3_tracker.meta.dataframer import LocalFHIRDatabase
 from opensearchpy import OpenSearchException
+
+from loom_client import export_generation, generation_id, load_generation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -391,35 +391,28 @@ def _load_all(
     file_path: pathlib.Path,
     work_path: str,
 ) -> bool:
-    """Load data into graph, flat, and FHIR stores."""
+    """Load raw data into Loom, then preserve the existing flat-load path."""
     project_id = f"{program}-{project}"
     work_path = pathlib.Path(work_path)
     db_path = work_path / "local_fhir.db"
 
     try:
-        grip_delete(
-            hostname,
-            graph_name=_get_env_var("GRIP_GRAPH_NAME"),
+        meta_files = sorted(file_path.rglob("*.ndjson"))
+        if not meta_files:
+            raise ValueError(f"No NDJSON files found in {file_path}")
+        loom_url = os.environ.get("LOOM_URL", f"{hostname}/loom")
+        generation = generation_id(project_id, meta_files)
+        load_result = load_generation(
+            loom_url=loom_url,
             project_id=project_id,
-            output=output,
+            generation=generation,
+            files=meta_files,
             access_token=_get_env_var("ACCESS_TOKEN"),
+            auth_resource_path=f"/programs/{program}/projects/{project}",
         )
-
-        for file in file_path.rglob("*.ndjson"):
-            status = bulk_load_raw(
-                hostname,
-                _get_env_var("GRIP_GRAPH_NAME"),
-                project_id,
-                str(file),
-                output,
-                _get_env_var("ACCESS_TOKEN"),
-            )
-            output["logs"].append(status)
-            logging.info(f"bulk_load_raw return status {status}")
-            if status["status"] != 200:
-                raise Exception(
-                    f"Critical Error load of file {file} returned non 200 status {status['status']}"
-                )
+        output["logs"].append(
+            f"Loaded Loom generation {generation}: {json.dumps(load_result, separators=(',', ':'))}"
+        )
 
         if not work_path.exists():
             raise ValueError(f"Directory {work_path} does not exist.")
@@ -429,13 +422,11 @@ def _load_all(
         output["logs"].append("loading sqlite db...")
         db = LocalFHIRDatabase(db_name=db_path)
         db.bulk_insert_data(
-            resources=get_project_data(
-                hostname,
-                _get_env_var("GRIP_GRAPH_NAME"),
-                project_id,
-                output,
-                _get_env_var("ACCESS_TOKEN"),
-                1024 * 1024,
+            resources=export_generation(
+                loom_url=loom_url,
+                project_id=project_id,
+                generation=generation,
+                access_token=_get_env_var("ACCESS_TOKEN"),
             )
         )
 
@@ -487,17 +478,9 @@ def _load_all(
 def _empty_project(
     hostname: str, output: Dict[str, Any], program: str, project: str
 ) -> None:
-    """Clear out graph and flat metadata for project."""
+    """Clear the existing flat publication; Loom generations are immutable."""
     project_id = f"{program}-{project}"
     try:
-        grip_delete(
-            hostname,
-            graph_name=_get_env_var("GRIP_GRAPH_NAME"),
-            project_id=project_id,
-            output=output,
-            access_token=_get_env_var("ACCESS_TOKEN"),
-        )
-        output["logs"].append(f"EMPTIED graph for {project_id}")
         for index in INDEX_NAMES:
             meta_flat_delete(project_id=project_id, index=index)
         output["logs"].append(f"EMPTIED flat for {project_id}")

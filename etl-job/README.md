@@ -57,4 +57,8 @@ ls -1 ~/.gen3/credentials.json
 # ./load_all 
 # or
 # python3 fhir_import.py
+
+# Optional Loom override for the database-only migration. If omitted, the job
+# uses https://$GEN3_HOSTNAME/loom.
+export LOOM_URL=https://loom.example.org
 ```
