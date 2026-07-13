@@ -1,7 +1,7 @@
-FROM golang:1.24.2-bookworm AS go-builder
+FROM golang:1.26.4-bookworm AS go-builder
 
-RUN go install github.com/calypr/forge@ed6c55bf5c21b33f14e61fce11d322b1bc29edd7
-RUN go install github.com/calypr/git-drs@9f29810405f5ea7d47e84cbda9df3c8d1870c95d
+RUN go install github.com/calypr/forge@3f3e05b1f1b75b6b2c3bb9779c1c8ebc5a895c67
+RUN go install github.com/calypr/git-drs@606ffd003ca50ac48ab5e91e16dcbf95719e775f
 
 
 FROM python:3.12-bookworm
@@ -11,7 +11,6 @@ RUN apt-get -y update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
     git \
-    git-lfs \
     iputils-ping \
     python3-dev \
     unzip \
@@ -20,8 +19,6 @@ RUN apt-get -y update && apt-get install -y --no-install-recommends \
     libtool \
     wget \
     && rm -rf /var/lib/apt/lists/*
-
-RUN git lfs install --skip-smudge
 
 WORKDIR /root
 
