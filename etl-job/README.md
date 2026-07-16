@@ -1,5 +1,13 @@
 # Building the ETL Docker Image
 
+The job is a native Go executable. It keeps the existing Sower environment
+contract (`INPUT_DATA`, `ACCESS_TOKEN`, and `GEN3_HOSTNAME`) and uses the
+exported Git-DRS and Forge Go command packages directly. A successful `put`
+clones and hydrates the repository, generates metadata through Forge's Go
+package,
+uploads each FHIR resource type to Loom, uploads Gecko configuration, and waits
+for Loom's default dataframe recipe materialization.
+
 ## 1. Authenticate with quay.io
 ```sh
 docker login quay.io
@@ -53,10 +61,8 @@ export study=myproject
 # ensure that the credentials are available in the pod, the job will read ACCESS_KEY if its there, otherwise defaults to 
 ls -1 ~/.gen3/credentials.json
 
-# whatever you want to test
-# ./load_all 
-# or
-# python3 fhir_import.py
+# run the same job locally
+./calypr-etl
 
 # Optional Loom override for the database-only migration. If omitted, the job
 # uses https://$GEN3_HOSTNAME/loom.

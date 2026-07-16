@@ -1,3 +1,4 @@
-#!/bin/bash
-source venv/bin/activate
+#!/bin/sh
+set -eu
+
 exec "$@"

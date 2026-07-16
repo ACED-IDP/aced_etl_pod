@@ -1,0 +1,144 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSplitProjectID(t *testing.T) {
+	program, project, err := splitProjectID("program-project")
+	if err != nil || program != "program" || project != "project" {
+		t.Fatalf("splitProjectID() = %q, %q, %v", program, project, err)
+	}
+	for _, value := range []string{"", "program", "-project", "program-", "a-b-c"} {
+		if _, _, err := splitProjectID(value); err == nil {
+			t.Fatalf("splitProjectID(%q) unexpectedly succeeded", value)
+		}
+	}
+}
+
+func TestRepoName(t *testing.T) {
+	for input, want := range map[string]string{
+		"https://github.com/example/study.git": "study",
+		"github.com/example/study":             "study",
+		"https://github.com/example/study/":    "study",
+	} {
+		if got := repoName(input); got != want {
+			t.Fatalf("repoName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestListMatchingMissingDirectoryIsEmpty(t *testing.T) {
+	files, err := listMatching(filepath.Join(t.TempDir(), "missing"), ".ndjson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("listMatching() = %v, want empty", files)
+	}
+}
+
+func TestPutResourceMultipartContract(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/projects/program-project/resources/Patient" {
+			return nil, fmt.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "bearer token" {
+			return nil, fmt.Errorf("unexpected authorization header: %q", got)
+		}
+		if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+			return nil, fmt.Errorf("parse multipart form: %v", err)
+		}
+		if got := r.FormValue("auth_resource_path"); got != "/programs/program/projects/project" {
+			return nil, fmt.Errorf("unexpected auth resource path: %q", got)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			return nil, fmt.Errorf("read upload: %v", err)
+		}
+		defer file.Close()
+		if header.Filename != "Patient.ndjson" {
+			return nil, fmt.Errorf("unexpected filename: %q", header.Filename)
+		}
+		content, err := io.ReadAll(file)
+		if err != nil {
+			return nil, err
+		}
+		if string(content) != "{\"resourceType\":\"Patient\"}\n" {
+			return nil, fmt.Errorf("unexpected upload content: %q", content)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+	})}
+
+	path := filepath.Join(t.TempDir(), "Patient.ndjson")
+	if err := os.WriteFile(path, []byte("{\"resourceType\":\"Patient\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := &job{
+		ctx:        context.Background(),
+		token:      "token",
+		loomURL:    "https://loom.example",
+		program:    "program",
+		project:    "project",
+		projectID:  "program-project",
+		output:     &outputData{},
+		httpClient: client,
+	}
+	if err := j.putResource("Patient", path); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(j.output.Logs, " "); !strings.Contains(got, "Patient.ndjson") {
+		t.Fatalf("missing upload log: %q", got)
+	}
+}
+
+func TestGraphQLPayloadContainsRecipeBindings(t *testing.T) {
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		if r.URL.Path != "/graphql/graph" || r.Method != http.MethodPost {
+			return nil, fmt.Errorf("unexpected GraphQL request: %s %s", r.Method, r.URL.Path)
+		}
+		var payload struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if !strings.Contains(payload.Query, "materializeDataframeRecipeBundle") {
+			return nil, fmt.Errorf("unexpected GraphQL query: %q", payload.Query)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"data":{"materializeDataframeRecipeBundle":{"id":"exec-1","state":"READY","name":"aced-meta-default"}}}`))}, nil
+	})}
+	j := &job{
+		ctx:        context.Background(),
+		token:      "token",
+		loomURL:    "https://loom.example",
+		httpClient: client,
+	}
+	var response struct {
+		Materialize struct {
+			ID string `json:"id"`
+		} `json:"materializeDataframeRecipeBundle"`
+	}
+	if err := j.graphql("mutation { materializeDataframeRecipeBundle { id } }", map[string]any{"input": map[string]any{"name": "aced-meta-default"}}, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !called || response.Materialize.ID != "exec-1" {
+		t.Fatalf("unexpected GraphQL response: called=%v response=%+v", called, response)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
