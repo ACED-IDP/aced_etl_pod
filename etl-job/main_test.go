@@ -12,6 +12,16 @@ import (
 	"testing"
 )
 
+func TestInputDataRetainsAPIEndpoint(t *testing.T) {
+	var input inputData
+	if err := json.Unmarshal([]byte(`{"APIEndpoint":"https://caliper-training.ohsu.edu"}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.APIEndpoint != "https://caliper-training.ohsu.edu" {
+		t.Fatalf("APIEndpoint = %q, want %q", input.APIEndpoint, "https://caliper-training.ohsu.edu")
+	}
+}
+
 func TestSplitProjectID(t *testing.T) {
 	program, project, err := splitProjectID("program-project")
 	if err != nil || program != "program" || project != "project" {

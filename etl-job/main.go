@@ -46,6 +46,7 @@ type inputData struct {
 	GHRepoURL    string `json:"ghRepoUrl"`
 	BucketName   string `json:"bucketName"`
 	Profile      string `json:"profile"`
+	APIEndpoint  string `json:"APIEndpoint"`
 }
 
 type outputData struct {
@@ -187,7 +188,11 @@ func (j *job) put() error {
 		return fmt.Errorf("discover CONFIG files: %w", err)
 	}
 	if len(metaFiles) > 0 || len(configFiles) > 0 {
-		if err := hydratePointers(j.ctx, j.hostname, j.token, j.program, j.project, targetDir, append(metaFiles, configFiles...)); err != nil {
+		drsEndpoint := strings.TrimRight(strings.TrimSpace(j.input.APIEndpoint), "/")
+		if drsEndpoint == "" {
+			return fmt.Errorf("Sower input APIEndpoint is required for Git-DRS hydration")
+		}
+		if err := hydratePointers(j.ctx, drsEndpoint, j.token, j.program, j.project, targetDir, append(metaFiles, configFiles...)); err != nil {
 			return fmt.Errorf("pull repository files with git-drs: %w", err)
 		}
 	}
@@ -406,6 +411,7 @@ func validateInput(in inputData) error {
 	fields := map[string]string{
 		"ghUserName": in.GHUserName, "ghToken": in.GHToken, "ghCommitHash": in.GHCommitHash,
 		"ghRepoUrl": in.GHRepoURL, "bucketName": in.BucketName, "profile": in.Profile,
+		"APIEndpoint": in.APIEndpoint,
 	}
 	for name, value := range fields {
 		if strings.TrimSpace(value) == "" {
