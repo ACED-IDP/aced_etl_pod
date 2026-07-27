@@ -202,6 +202,7 @@ func (j *job) put() error {
 		var err error
 		reconciliation, err = metadata.ReconcileGitPointers(j.ctx, metadata.ReconcileOptions{
 			RepositoryRoot: targetDir,
+			GitRef:         j.input.GHCommitHash,
 			FHIRDirectory:  filepath.Join(targetDir, metaDir),
 			ProfileName:    j.input.Profile,
 			GitRemoteName:  j.input.Profile,
