@@ -571,7 +571,17 @@ func hydratePointers(ctx context.Context, endpoint, token, organization, project
 	if len(files) == 0 {
 		return nil
 	}
-	if err := remote.Pull(ctx, gitdrs.PullOptions{Root: root, Files: files, Overwrite: true}); err != nil {
+	// The git-drs downloader treats an existing destination as a partial
+	// download and resumes from its current size. LFS pointer files already
+	// occupy those destinations, so leaving them in place produces a corrupt
+	// payload consisting of the pointer prefix plus the payload tail.
+	for _, file := range files {
+		path := filepath.Join(root, filepath.FromSlash(file.Path))
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove Git-DRS pointer %s before hydration: %w", file.Path, err)
+		}
+	}
+	if err := remote.Pull(ctx, gitdrs.PullOptions{Root: root, Files: files}); err != nil {
 		return err
 	}
 	return nil
