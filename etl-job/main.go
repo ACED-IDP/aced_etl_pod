@@ -197,7 +197,9 @@ func (j *job) put() error {
 		}
 	}
 
-	if err := metadata.CreateMeta(filepath.Join(targetDir, metaDir), j.input.Profile, j.input.Profile); err != nil {
+	if err := withWorkingDirectory(targetDir, func() error {
+		return metadata.CreateMeta(filepath.Join(targetDir, metaDir), j.input.Profile, j.input.Profile)
+	}); err != nil {
 		return fmt.Errorf("generate forge metadata: %w", err)
 	}
 	if err := moveGeneratedMetadata(targetDir, loadPath); err != nil {
