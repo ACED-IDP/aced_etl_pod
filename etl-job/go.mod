@@ -3,7 +3,7 @@ module github.com/calypr/calypr-etl
 go 1.26.5
 
 require (
-	github.com/calypr/forge v0.1.2-0.20260616181026-3f3e05b1f1b7
+	github.com/calypr/forge v0.1.2-0.20260727223104-e5d192c32d56
 	github.com/calypr/git-drs v0.7.10-0.20260716221947-bd920bb25e95
 )
 
@@ -56,6 +56,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/nxadm/tail v1.4.11 // indirect
 	github.com/oapi-codegen/runtime v1.5.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect

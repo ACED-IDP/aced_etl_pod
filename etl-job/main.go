@@ -197,10 +197,26 @@ func (j *job) put() error {
 		}
 	}
 
+	var reconciliation metadata.ReconcileReport
 	if err := withWorkingDirectory(targetDir, func() error {
-		return metadata.CreateMeta(filepath.Join(targetDir, metaDir), j.input.Profile, j.input.Profile)
+		var err error
+		reconciliation, err = metadata.ReconcileGitPointers(j.ctx, metadata.ReconcileOptions{
+			RepositoryRoot: targetDir,
+			FHIRDirectory:  filepath.Join(targetDir, metaDir),
+			ProfileName:    j.input.Profile,
+			GitRemoteName:  j.input.Profile,
+		})
+		return err
 	}); err != nil {
 		return fmt.Errorf("generate forge metadata: %w", err)
+	}
+	message := fmt.Sprintf("Git/Syfon reconciliation: pointers=%d authored=%d matched=%d generated=%d metadata_only=%d authored_without_sha=%d", reconciliation.GitPointers, reconciliation.AuthoredRows, reconciliation.MatchedRows, reconciliation.GeneratedRows, len(reconciliation.MetadataOnlySHA256), reconciliation.AuthoredRowsWithoutSHA)
+	slog.Info(message)
+	j.output.Logs = append(j.output.Logs, message)
+	if len(reconciliation.MetadataOnlySHA256) > 0 {
+		warning := fmt.Sprintf("WARNING: retained %d authored DocumentReference SHA256 values not present in the Git snapshot", len(reconciliation.MetadataOnlySHA256))
+		slog.Warn(warning)
+		j.output.Logs = append(j.output.Logs, warning)
 	}
 	if err := moveGeneratedMetadata(targetDir, loadPath); err != nil {
 		return err
