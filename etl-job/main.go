@@ -27,7 +27,7 @@ import (
 const (
 	metaDir              = "META"
 	configDir            = "CONFIG"
-	requestTimeout       = 30 * time.Second
+	requestTimeout       = 5 * time.Minute
 	uploadTimeout        = time.Hour
 	recipePollInterval   = 2 * time.Second
 	recipePollTimeout    = 30 * time.Minute
@@ -52,7 +52,7 @@ type inputData struct {
 type outputData struct {
 	User  string   `json:"user"`
 	Files []string `json:"files"`
-	Logs  []string `json:"logs"`
+	Logs  []string `json:"logs,omitempty"`
 }
 
 type job struct {
@@ -70,6 +70,7 @@ type job struct {
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 	ctx := context.Background()
 	output := &outputData{Files: []string{}, Logs: []string{}}
 
@@ -102,8 +103,7 @@ func main() {
 		return
 	}
 	output.User = stringValue(user["email"])
-	output.Logs = append(output.Logs, fmt.Sprintf("Starting ETL method=%s projectId=%s", input.Method, input.ProjectID))
-	logger.Info("authorized successfully", "user", output.User)
+	logger.Info("starting ETL", "method", input.Method, "project_id", input.ProjectID, "user", output.User)
 
 	j := &job{
 		ctx:        ctx,
@@ -213,13 +213,14 @@ func (j *job) put() error {
 	}
 	message := fmt.Sprintf("Git/Syfon reconciliation: pointers=%d authored=%d matched=%d generated=%d metadata_only=%d authored_without_sha=%d", reconciliation.GitPointers, reconciliation.AuthoredRows, reconciliation.MatchedRows, reconciliation.GeneratedRows, len(reconciliation.MetadataOnlySHA256), reconciliation.AuthoredRowsWithoutSHA)
 	slog.Info(message)
-	j.output.Logs = append(j.output.Logs, message)
 	if len(reconciliation.MetadataOnlySHA256) > 0 {
 		warning := fmt.Sprintf("WARNING: retained %d authored DocumentReference SHA256 values not present in the Git snapshot", len(reconciliation.MetadataOnlySHA256))
 		slog.Warn(warning)
-		j.output.Logs = append(j.output.Logs, warning)
 	}
 	if err := moveGeneratedMetadata(targetDir, loadPath); err != nil {
+		return err
+	}
+	if err := validateDocumentReferences(loadPath); err != nil {
 		return err
 	}
 	if err := j.uploadConfigs(filepath.Join(targetDir, configDir)); err != nil {
@@ -292,7 +293,7 @@ func (j *job) putResource(resourceType, path string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return responseError(resp)
 	}
-	j.output.Logs = append(j.output.Logs, fmt.Sprintf("Loaded %s into Loom", filepath.Base(path)))
+	slog.Info("loaded resource into Loom", "file", filepath.Base(path), "resource_type", resourceType)
 	return nil
 }
 
@@ -305,7 +306,7 @@ func (j *job) uploadConfigs(dir string) error {
 		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		parts := strings.Split(base, "-")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			j.output.Logs = append(j.output.Logs, fmt.Sprintf("SKIPPING: File %s does not contain exactly one hyphen.", filepath.Base(path)))
+			slog.Warn("skipping config file without project suffix", "file", filepath.Base(path))
 			continue
 		}
 		content, err := os.ReadFile(path)
@@ -329,7 +330,7 @@ func (j *job) uploadConfigs(dir string) error {
 			return fmt.Errorf("upload config %s: %w", filepath.Base(path), err)
 		}
 		resp.Body.Close()
-		j.output.Logs = append(j.output.Logs, fmt.Sprintf("Gecko explorer config response: %d", resp.StatusCode))
+		slog.Info("uploaded Gecko explorer config", "status", resp.StatusCode, "config", base)
 	}
 	return nil
 }
@@ -358,7 +359,7 @@ func (j *job) materialize() error {
 	if started.Materialize.ID == "" {
 		return errors.New("Loom recipe materialization returned no execution ID")
 	}
-	j.output.Logs = append(j.output.Logs, fmt.Sprintf("Started Loom recipe %s execution %s", name, started.Materialize.ID))
+	slog.Info("started Loom recipe materialization", "recipe", name, "execution_id", started.Materialize.ID)
 
 	query := `query($id: ID!) { dataframeRecipeExecution(id: $id) { id state error } }`
 	deadline := time.Now().Add(recipePollTimeout)
@@ -378,7 +379,7 @@ func (j *job) materialize() error {
 		}
 		switch status.Execution.State {
 		case "READY":
-			j.output.Logs = append(j.output.Logs, fmt.Sprintf("Loom recipe execution %s is ready", started.Materialize.ID))
+			slog.Info("Loom recipe materialization is ready", "execution_id", started.Materialize.ID)
 			return nil
 		case "FAILED":
 			if status.Execution.Error != nil {
@@ -541,6 +542,42 @@ func moveGeneratedMetadata(targetDir, loadDir string) error {
 	return nil
 }
 
+func validateDocumentReferences(dir string) error {
+	path := filepath.Join(dir, "DocumentReference.ndjson")
+	input, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+
+	seenIDs := make(map[string]struct{})
+	scanner := bufio.NewScanner(input)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		var resource struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &resource); err != nil {
+			return fmt.Errorf("parse DocumentReference: %w", err)
+		}
+		resource.ID = strings.TrimSpace(resource.ID)
+		if resource.ID == "" {
+			return errors.New("DocumentReference is missing id")
+		}
+		if _, exists := seenIDs[resource.ID]; exists {
+			return fmt.Errorf("duplicate DocumentReference id %q", resource.ID)
+		}
+		seenIDs[resource.ID] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func listNDJSON(dir string) ([]string, error) {
 	return listMatching(dir, ".ndjson")
 }
@@ -682,6 +719,7 @@ func stringValue(value any) string {
 }
 
 func fatalOutput(output *outputData, err error) {
+	slog.Error("ETL failed", "error", err)
 	output.Logs = append(output.Logs, err.Error())
 	writeOutput(output)
 	os.Exit(1)

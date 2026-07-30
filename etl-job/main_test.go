@@ -105,8 +105,28 @@ func TestPutResourceMultipartContract(t *testing.T) {
 	if err := j.putResource("Patient", path); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(j.output.Logs, " "); !strings.Contains(got, "Patient.ndjson") {
-		t.Fatalf("missing upload log: %q", got)
+}
+
+func TestOutputOmitsEmptyLogs(t *testing.T) {
+	encoded, err := json.Marshal(outputData{User: "user", Files: []string{"Patient.ndjson"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "logs") {
+		t.Fatalf("successful output contains buffered logs: %s", encoded)
+	}
+}
+
+func TestValidateDocumentReferences(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "DocumentReference.ndjson")
+	contents := "{\"resourceType\":\"DocumentReference\",\"id\":\"keep\",\"description\":\"authored\"}\n" +
+		"{\"resourceType\":\"DocumentReference\",\"id\":\"keep\",\"description\":\"generated\"}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDocumentReferences(dir); err == nil || !strings.Contains(err.Error(), "duplicate DocumentReference id") {
+		t.Fatalf("validateDocumentReferences() error = %v", err)
 	}
 }
 
