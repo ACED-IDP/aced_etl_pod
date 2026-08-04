@@ -34,6 +34,16 @@ func TestSplitProjectID(t *testing.T) {
 	}
 }
 
+func TestRedactInputPacket(t *testing.T) {
+	got := redactInputPacket(`{"projectId":"program-project","ghToken":"secret","bucketName":"bucket"}`)
+	if !strings.Contains(got, `"projectId":"program-project"`) {
+		t.Fatalf("redacted packet lost projectId: %s", got)
+	}
+	if strings.Contains(got, "secret") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("redacted packet exposed token: %s", got)
+	}
+}
+
 func TestRepoName(t *testing.T) {
 	for input, want := range map[string]string{
 		"https://github.com/example/study.git": "study",

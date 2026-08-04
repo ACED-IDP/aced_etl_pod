@@ -25,14 +25,15 @@ import (
 )
 
 const (
-	metaDir              = "META"
-	configDir            = "CONFIG"
-	requestTimeout       = 5 * time.Minute
-	uploadTimeout        = time.Hour
-	recipePollInterval   = 2 * time.Second
-	recipePollTimeout    = 30 * time.Minute
-	defaultRecipeName    = "calypr-meta-default"
-	defaultRepositoryDir = "/root/repo"
+	metaDir                   = "META"
+	configDir                 = "CONFIG"
+	requestTimeout            = 5 * time.Minute
+	uploadTimeout             = time.Hour
+	recipePollInterval        = 2 * time.Second
+	recipePollTimeout         = 30 * time.Minute
+	defaultRecipeName         = "calypr-meta-default"
+	defaultRepositoryDir      = "/root/repo"
+	operationProgressInterval = 30 * time.Second
 )
 
 var workingDirectoryMu sync.Mutex
@@ -86,7 +87,14 @@ func main() {
 	}
 	hostname = "https://" + strings.TrimRight(hostname, "/")
 
-	input, err := parseInput()
+	rawInput, err := requiredEnv("INPUT_DATA")
+	if err != nil {
+		fatalOutput(output, err)
+		return
+	}
+	output.Logs = append(output.Logs, "received INPUT_DATA="+redactInputPacket(rawInput))
+
+	input, err := parseInput(rawInput)
 	if err != nil {
 		fatalOutput(output, err)
 		return
@@ -97,8 +105,12 @@ func main() {
 		return
 	}
 
-	user, err := fetchUser(ctx, hostname, token)
-	if err != nil {
+	var user map[string]any
+	if err := runOperation("retrieve user profile", func() error {
+		var err error
+		user, err = fetchUser(ctx, hostname, token)
+		return err
+	}); err != nil {
 		fatalOutput(output, fmt.Errorf("retrieve user info: %w", err))
 		return
 	}
@@ -133,81 +145,115 @@ func main() {
 }
 
 func (j *job) put() error {
-	if err := validateInput(j.input); err != nil {
+	if err := runOperation("validate job input", func() error {
+		return validateInput(j.input)
+	}); err != nil {
 		return err
 	}
 
 	loadPath := filepath.Join(defaultRepositoryDir, j.project)
 	workspaceDir := filepath.Dir(loadPath)
-	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+	if err := runOperation("create repository workspace", func() error {
+		return os.MkdirAll(workspaceDir, 0o755)
+	}); err != nil {
 		return fmt.Errorf("create repository workspace: %w", err)
 	}
 	targetDir := filepath.Join(workspaceDir, repoName(j.input.GHRepoURL))
 	defer func() {
+		slog.Info("ETL operation started", "operation", "clean up repository workspace")
 		_ = os.RemoveAll(loadPath)
 		_ = os.RemoveAll(targetDir)
+		slog.Info("ETL operation completed", "operation", "clean up repository workspace")
 	}()
 
-	if err := cloneRepository(j.ctx, j.input, workspaceDir); err != nil {
+	if err := runOperation("clone repository", func() error {
+		return cloneRepository(j.ctx, j.input, workspaceDir)
+	}, "repository", j.input.GHRepoURL); err != nil {
 		return err
 	}
-	if err := checkoutRepository(j.ctx, targetDir, j.input.GHCommitHash); err != nil {
+	if err := runOperation("checkout requested commit", func() error {
+		return checkoutRepository(j.ctx, targetDir, j.input.GHCommitHash)
+	}, "commit", j.input.GHCommitHash); err != nil {
 		return err
 	}
 	if j.input.Profile != "origin" {
-		if err := runGit(j.ctx, targetDir, "remote", "rename", "origin", j.input.Profile); err != nil {
+		if err := runOperation("rename Git remote", func() error {
+			return runGit(j.ctx, targetDir, "remote", "rename", "origin", j.input.Profile)
+		}, "remote", j.input.Profile); err != nil {
 			return fmt.Errorf("rename git remote: %w", err)
 		}
 	}
 
-	if err := withWorkingDirectory(targetDir, func() error {
-		logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-		if err := gitdrs.InitializeRepository(logger); err != nil {
-			return fmt.Errorf("initialize git-drs: %w", err)
+	if err := runOperation("initialize git-drs repository", func() error {
+		return withWorkingDirectory(targetDir, func() error {
+			if err := gitdrs.InitializeRepository(slog.Default()); err != nil {
+				return fmt.Errorf("initialize git-drs: %w", err)
+			}
+			return nil
+		})
+	}); err != nil {
+		return err
+	}
+	if err := runOperation("configure git-drs remote", func() error {
+		return withWorkingDirectory(targetDir, func() error {
+			if err := gitdrs.ConfigureGen3Remote(gitdrs.Gen3RemoteOptions{
+				RemoteName: j.input.Profile,
+				Token:      j.token,
+				Bucket:     j.input.BucketName,
+				Scope:      j.program + "/" + j.project,
+				Logger:     slog.Default(),
+			}); err != nil {
+				return fmt.Errorf("configure git-drs remote: %w", err)
+			}
+			return nil
+		})
+	}, "scope", j.program+"/"+j.project); err != nil {
+		return err
+	}
+
+	var metaFiles, configFiles []string
+	if err := runOperation("discover repository inputs", func() error {
+		var err error
+		metaFiles, err = listNDJSON(filepath.Join(targetDir, metaDir))
+		if err != nil {
+			return fmt.Errorf("discover META files: %w", err)
 		}
-		if err := gitdrs.ConfigureGen3Remote(gitdrs.Gen3RemoteOptions{
-			RemoteName: j.input.Profile,
-			Token:      j.token,
-			Bucket:     j.input.BucketName,
-			Scope:      j.program + "/" + j.project,
-			Logger:     logger,
-		}); err != nil {
-			return fmt.Errorf("configure git-drs remote: %w", err)
+		configFiles, err = listJSON(filepath.Join(targetDir, configDir))
+		if err != nil {
+			return fmt.Errorf("discover CONFIG files: %w", err)
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-
-	metaFiles, err := listNDJSON(filepath.Join(targetDir, metaDir))
-	if err != nil {
-		return fmt.Errorf("discover META files: %w", err)
-	}
-	configFiles, err := listJSON(filepath.Join(targetDir, configDir))
-	if err != nil {
-		return fmt.Errorf("discover CONFIG files: %w", err)
-	}
+	slog.Info("repository inputs discovered", "metadata_files", len(metaFiles), "config_files", len(configFiles))
 	if len(metaFiles) > 0 || len(configFiles) > 0 {
 		drsEndpoint := strings.TrimRight(strings.TrimSpace(j.input.APIEndpoint), "/")
 		if drsEndpoint == "" {
 			return fmt.Errorf("Sower input APIEndpoint is required for Git-DRS hydration")
 		}
-		if err := hydratePointers(j.ctx, drsEndpoint, j.token, j.program, j.project, targetDir, append(metaFiles, configFiles...)); err != nil {
+		if err := runOperation("hydrate Git-DRS pointer files", func() error {
+			return hydratePointers(j.ctx, drsEndpoint, j.token, j.program, j.project, targetDir, append(metaFiles, configFiles...))
+		}, "files", len(metaFiles)+len(configFiles)); err != nil {
 			return fmt.Errorf("pull repository files with git-drs: %w", err)
 		}
+	} else {
+		slog.Info("no Git-DRS pointer files require hydration")
 	}
 
 	var reconciliation metadata.ReconcileReport
-	if err := withWorkingDirectory(targetDir, func() error {
-		var err error
-		reconciliation, err = metadata.ReconcileGitPointers(j.ctx, metadata.ReconcileOptions{
-			RepositoryRoot: targetDir,
-			GitRef:         j.input.GHCommitHash,
-			FHIRDirectory:  filepath.Join(targetDir, metaDir),
-			ProfileName:    j.input.Profile,
-			GitRemoteName:  j.input.Profile,
+	if err := runOperation("reconcile Git metadata with Syfon", func() error {
+		return withWorkingDirectory(targetDir, func() error {
+			var err error
+			reconciliation, err = metadata.ReconcileGitPointers(j.ctx, metadata.ReconcileOptions{
+				RepositoryRoot: targetDir,
+				GitRef:         j.input.GHCommitHash,
+				FHIRDirectory:  filepath.Join(targetDir, metaDir),
+				ProfileName:    j.input.Profile,
+				GitRemoteName:  j.input.Profile,
+			})
+			return err
 		})
-		return err
 	}); err != nil {
 		return fmt.Errorf("generate forge metadata: %w", err)
 	}
@@ -217,19 +263,25 @@ func (j *job) put() error {
 		warning := fmt.Sprintf("WARNING: retained %d authored DocumentReference SHA256 values not present in the Git snapshot", len(reconciliation.MetadataOnlySHA256))
 		slog.Warn(warning)
 	}
-	if err := moveGeneratedMetadata(targetDir, loadPath); err != nil {
+	if err := runOperation("prepare generated metadata", func() error {
+		if err := moveGeneratedMetadata(targetDir, loadPath); err != nil {
+			return err
+		}
+		return validateDocumentReferences(loadPath)
+	}); err != nil {
 		return err
 	}
-	if err := validateDocumentReferences(loadPath); err != nil {
+	if err := runOperation("upload Gecko configuration", func() error {
+		return j.uploadConfigs(filepath.Join(targetDir, configDir))
+	}); err != nil {
 		return err
 	}
-	if err := j.uploadConfigs(filepath.Join(targetDir, configDir)); err != nil {
+	if err := runOperation("upload FHIR metadata to Loom", func() error {
+		return j.uploadMetadata(loadPath)
+	}); err != nil {
 		return err
 	}
-	if err := j.uploadMetadata(loadPath); err != nil {
-		return err
-	}
-	if err := j.materialize(); err != nil {
+	if err := runOperation("materialize Loom recipe", j.materialize, "recipe", envOr("LOOM_RECIPE_NAME", defaultRecipeName)); err != nil {
 		return err
 	}
 	return nil
@@ -243,6 +295,7 @@ func (j *job) uploadMetadata(dir string) error {
 	if len(files) == 0 {
 		return fmt.Errorf("no NDJSON files found in %s", dir)
 	}
+	slog.Info("starting FHIR metadata upload", "files", len(files), "project_id", j.projectID)
 	for _, path := range files {
 		resourceType := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		if err := j.putResource(resourceType, path); err != nil {
@@ -254,6 +307,7 @@ func (j *job) uploadMetadata(dir string) error {
 }
 
 func (j *job) putResource(resourceType, path string) error {
+	slog.Info("uploading FHIR resource to Loom", "file", filepath.Base(path), "resource_type", resourceType)
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -302,6 +356,7 @@ func (j *job) uploadConfigs(dir string) error {
 	if err != nil {
 		return err
 	}
+	slog.Info("starting Gecko configuration upload", "files", len(files))
 	for _, path := range files {
 		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		parts := strings.Split(base, "-")
@@ -314,6 +369,7 @@ func (j *job) uploadConfigs(dir string) error {
 			return fmt.Errorf("read config %s: %w", filepath.Base(path), err)
 		}
 		endpoint := fmt.Sprintf("%s/gecko/explorer/%s", j.hostname, url.PathEscape(base))
+		slog.Info("uploading Gecko explorer config", "config", base)
 		req, err := http.NewRequestWithContext(j.ctx, http.MethodPut, endpoint, bytes.NewReader(content))
 		if err != nil {
 			return err
@@ -337,6 +393,7 @@ func (j *job) uploadConfigs(dir string) error {
 
 func (j *job) materialize() error {
 	name := envOr("LOOM_RECIPE_NAME", defaultRecipeName)
+	slog.Info("requesting Loom recipe materialization", "recipe", name, "project_id", j.projectID, "auth_resource_path", fmt.Sprintf("/programs/%s/projects/%s", j.program, j.project))
 	input := map[string]any{
 		"name": name,
 		"bindings": map[string]any{
@@ -362,8 +419,15 @@ func (j *job) materialize() error {
 	slog.Info("started Loom recipe materialization", "recipe", name, "execution_id", started.Materialize.ID)
 
 	query := `query($id: ID!) { dataframeRecipeExecution(id: $id) { id state error } }`
-	deadline := time.Now().Add(recipePollTimeout)
+	materializationStarted := time.Now()
+	deadline := materializationStarted.Add(recipePollTimeout)
+	lastPollLog := time.Now().Add(-operationProgressInterval)
+	lastState := ""
 	for time.Now().Before(deadline) {
+		if time.Since(lastPollLog) >= operationProgressInterval {
+			slog.Info("waiting for Loom recipe materialization", "execution_id", started.Materialize.ID, "last_state", lastState, "elapsed", time.Since(materializationStarted))
+			lastPollLog = time.Now()
+		}
 		var status struct {
 			Execution *struct {
 				ID    string  `json:"id"`
@@ -376,6 +440,10 @@ func (j *job) materialize() error {
 		}
 		if status.Execution == nil {
 			return errors.New("Loom recipe execution disappeared")
+		}
+		if status.Execution.State != lastState {
+			slog.Info("Loom recipe materialization state changed", "execution_id", started.Materialize.ID, "state", status.Execution.State)
+			lastState = status.Execution.State
 		}
 		switch status.Execution.State {
 		case "READY":
@@ -441,11 +509,7 @@ func validateInput(in inputData) error {
 	return nil
 }
 
-func parseInput() (inputData, error) {
-	raw, err := requiredEnv("INPUT_DATA")
-	if err != nil {
-		return inputData{}, err
-	}
+func parseInput(raw string) (inputData, error) {
 	var input inputData
 	if err := json.Unmarshal([]byte(raw), &input); err != nil {
 		return inputData{}, fmt.Errorf("parse INPUT_DATA: %w", err)
@@ -454,6 +518,24 @@ func parseInput() (inputData, error) {
 		return inputData{}, errors.New("input data must contain a `method`")
 	}
 	return input, nil
+}
+
+func redactInputPacket(raw string) string {
+	var packet map[string]any
+	if err := json.Unmarshal([]byte(raw), &packet); err != nil {
+		return fmt.Sprintf("<invalid JSON: %s>", err)
+	}
+	for key := range packet {
+		name := strings.ToLower(key)
+		if strings.Contains(name, "token") || strings.Contains(name, "secret") || strings.Contains(name, "password") {
+			packet[key] = "[REDACTED]"
+		}
+	}
+	encoded, err := json.Marshal(packet)
+	if err != nil {
+		return "<unable to encode INPUT_DATA>"
+	}
+	return string(encoded)
 }
 
 func fetchUser(ctx context.Context, hostname, token string) (map[string]any, error) {
@@ -490,7 +572,7 @@ func cloneRepository(ctx context.Context, in inputData, workspace string) error 
 }
 
 func checkoutRepository(ctx context.Context, dir, commit string) error {
-	if err := runGit(ctx, dir, "checkout", commit); err != nil {
+	if err := runGit(ctx, dir, "-c", "advice.detachedHead=false", "checkout", commit); err != nil {
 		return fmt.Errorf("checkout %s: %w", commit, err)
 	}
 	return nil
@@ -498,6 +580,22 @@ func checkoutRepository(ctx context.Context, dir, commit string) error {
 
 func runGit(ctx context.Context, dir string, args ...string) error {
 	return runCommand(ctx, dir, "git", args...)
+}
+
+func runOperation(name string, fn func() error, attrs ...any) error {
+	start := time.Now()
+	startAttrs := append([]any{"operation", name}, attrs...)
+	slog.Info("ETL operation started", startAttrs...)
+
+	err := fn()
+	endAttrs := append([]any{"operation", name, "elapsed", time.Since(start)}, attrs...)
+	if err != nil {
+		endAttrs = append(endAttrs, "error", err)
+		slog.Error("ETL operation failed", endAttrs...)
+		return err
+	}
+	slog.Info("ETL operation completed", endAttrs...)
+	return nil
 }
 
 func runCommand(ctx context.Context, dir, name string, args ...string) error {
@@ -627,6 +725,7 @@ func hydratePointers(ctx context.Context, endpoint, token, organization, project
 	if len(files) == 0 {
 		return nil
 	}
+	slog.Info("starting Git-DRS pointer hydration", "files", len(files), "organization", organization, "project", project)
 	// The git-drs downloader treats an existing destination as a partial
 	// download and resumes from its current size. LFS pointer files already
 	// occupy those destinations, so leaving them in place produces a corrupt
@@ -640,6 +739,7 @@ func hydratePointers(ctx context.Context, endpoint, token, organization, project
 	if err := remote.Pull(ctx, gitdrs.PullOptions{Root: root, Files: files}); err != nil {
 		return err
 	}
+	slog.Info("completed Git-DRS pointer hydration", "files", len(files))
 	return nil
 }
 
