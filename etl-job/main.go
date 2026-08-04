@@ -31,7 +31,7 @@ const (
 	uploadTimeout        = time.Hour
 	recipePollInterval   = 2 * time.Second
 	recipePollTimeout    = 30 * time.Minute
-	defaultRecipeName    = "aced-meta-default"
+	defaultRecipeName    = "calypr-meta-default"
 	defaultRepositoryDir = "/root/repo"
 )
 

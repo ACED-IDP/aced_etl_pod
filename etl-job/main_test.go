@@ -131,39 +131,54 @@ func TestValidateDocumentReferences(t *testing.T) {
 }
 
 func TestGraphQLPayloadContainsRecipeBindings(t *testing.T) {
-	called := false
+	t.Setenv("LOOM_RECIPE_NAME", "")
+	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		called = true
+		requests++
 		if r.URL.Path != "/graphql/graph" || r.Method != http.MethodPost {
 			return nil, fmt.Errorf("unexpected GraphQL request: %s %s", r.Method, r.URL.Path)
 		}
 		var payload struct {
-			Query string `json:"query"`
+			Query     string `json:"query"`
+			Variables struct {
+				Input struct {
+					Name     string `json:"name"`
+					Bindings struct {
+						Project           string   `json:"project"`
+						AuthResourcePaths []string `json:"authResourcePaths"`
+					} `json:"bindings"`
+				} `json:"input"`
+			} `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			return nil, err
 		}
-		if !strings.Contains(payload.Query, "materializeDataframeRecipeBundle") {
-			return nil, fmt.Errorf("unexpected GraphQL query: %q", payload.Query)
+		if strings.Contains(payload.Query, "materializeDataframeRecipeBundle") {
+			input := payload.Variables.Input
+			if input.Name != "calypr-meta-default" || input.Bindings.Project != "program-project" || len(input.Bindings.AuthResourcePaths) != 1 || input.Bindings.AuthResourcePaths[0] != "/programs/program/projects/project" {
+				return nil, fmt.Errorf("unexpected materialization input: %+v", input)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"data":{"materializeDataframeRecipeBundle":{"id":"exec-1","state":"READY","name":"calypr-meta-default"}}}`))}, nil
 		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"data":{"materializeDataframeRecipeBundle":{"id":"exec-1","state":"READY","name":"aced-meta-default"}}}`))}, nil
+		if strings.Contains(payload.Query, "dataframeRecipeExecution") {
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"data":{"dataframeRecipeExecution":{"id":"exec-1","state":"READY","error":null}}}`))}, nil
+		}
+		return nil, fmt.Errorf("unexpected GraphQL query: %q", payload.Query)
 	})}
 	j := &job{
 		ctx:        context.Background(),
 		token:      "token",
 		loomURL:    "https://loom.example",
+		program:    "program",
+		project:    "project",
+		projectID:  "program-project",
 		httpClient: client,
 	}
-	var response struct {
-		Materialize struct {
-			ID string `json:"id"`
-		} `json:"materializeDataframeRecipeBundle"`
-	}
-	if err := j.graphql("mutation { materializeDataframeRecipeBundle { id } }", map[string]any{"input": map[string]any{"name": "aced-meta-default"}}, &response); err != nil {
+	if err := j.materialize(); err != nil {
 		t.Fatal(err)
 	}
-	if !called || response.Materialize.ID != "exec-1" {
-		t.Fatalf("unexpected GraphQL response: called=%v response=%+v", called, response)
+	if requests != 2 {
+		t.Fatalf("GraphQL requests = %d, want 2", requests)
 	}
 }
 

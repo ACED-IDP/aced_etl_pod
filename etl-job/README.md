@@ -67,4 +67,7 @@ ls -1 ~/.gen3/credentials.json
 # Optional Loom override for the database-only migration. If omitted, the job
 # uses https://$GEN3_HOSTNAME/loom.
 export LOOM_URL=https://loom.example.org
+
+# Optional recipe override. The default is calypr-meta-default.
+export LOOM_RECIPE_NAME=calypr-meta-default
 ```
