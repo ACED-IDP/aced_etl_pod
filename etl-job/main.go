@@ -517,7 +517,7 @@ func (j *job) graphql(query string, variables map[string]any, out any) error {
 func validateInput(in inputData) error {
 	fields := map[string]string{
 		"ghUserName": in.GHUserName, "ghToken": in.GHToken, "ghCommitHash": in.GHCommitHash,
-		"ghRepoUrl": in.GHRepoURL, "bucketName": in.BucketName, "profile": in.Profile,
+		"ghRepoUrl": in.GHRepoURL, "profile": in.Profile,
 		"APIEndpoint": in.APIEndpoint,
 	}
 	for name, value := range fields {

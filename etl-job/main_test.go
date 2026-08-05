@@ -45,6 +45,20 @@ func TestInputDataRetainsAPIEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidateInputAllowsEmptyBucket(t *testing.T) {
+	err := validateInput(inputData{
+		GHUserName:   "user",
+		GHToken:      "token",
+		GHCommitHash: "commit",
+		GHRepoURL:    "github.com/example/repository",
+		Profile:      "dev",
+		APIEndpoint:  "https://calypr-dev.example",
+	})
+	if err != nil {
+		t.Fatalf("validateInput() rejected an empty bucket: %v", err)
+	}
+}
+
 func TestSplitProjectID(t *testing.T) {
 	program, project, err := splitProjectID("program-project")
 	if err != nil || program != "program" || project != "project" {
