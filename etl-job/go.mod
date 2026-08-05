@@ -3,7 +3,7 @@ module github.com/calypr/calypr-etl
 go 1.26.5
 
 require (
-	github.com/calypr/forge v0.1.2-0.20260730215809-060dd3044b75
+	github.com/calypr/forge v0.1.2-0.20260805165515-8e1f59344bba
 	github.com/calypr/git-drs v0.7.10-0.20260727230551-41211e8c328b
 )
 

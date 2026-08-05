@@ -32,8 +32,8 @@ github.com/bytedance/sonic/loader v0.5.1 h1:Ygpfa9zwRCCKSlrp5bBP/b/Xzc3VxsAW+5NI
 github.com/bytedance/sonic/loader v0.5.1/go.mod h1:AR4NYCk5DdzZizZ5djGqQ92eEhCCcdf5x77udYiSJRo=
 github.com/calypr/calypr-cli v0.0.4-0.20260628024636-bb44afe0c576 h1:ToXXURxRa8Cev0WjAvwDoOFYof5TDbrOjV+gNBz7v60=
 github.com/calypr/calypr-cli v0.0.4-0.20260628024636-bb44afe0c576/go.mod h1:9r9ffAA6QUCjJlrdJIlu0jPmS7rwv977Uau2xipVkaM=
-github.com/calypr/forge v0.1.2-0.20260730215809-060dd3044b75 h1:8FWogmyonx2dDKCwat4X6tSVQyv9881pEUcY5Egj7BU=
-github.com/calypr/forge v0.1.2-0.20260730215809-060dd3044b75/go.mod h1:710m+XB9mH9wTEFlWiMC9+Po5Paut2Wmmz3ks2fvlok=
+github.com/calypr/forge v0.1.2-0.20260805165515-8e1f59344bba h1:O3sFcuFzeGrXJXwL7i5zgFXlx5nwv0TJYBHorp2GOQw=
+github.com/calypr/forge v0.1.2-0.20260805165515-8e1f59344bba/go.mod h1:ZHnBH3WezkucF5FJ/BNA+X7WqNZiQHY9z1blbaevda8=
 github.com/calypr/git-drs v0.7.10-0.20260727230551-41211e8c328b h1:kHJ/K3yfi47Bq2WMrBeinF4vhSa1snahkxgdzRedBZ4=
 github.com/calypr/git-drs v0.7.10-0.20260727230551-41211e8c328b/go.mod h1:0Nl6tf17uvZ875w0i20L+zHDiP3rdGGW3B6BsI2DmMI=
 github.com/calypr/syfon v0.3.2-0.20260616212227-547f1e22e1ac h1:pNwp1J6K3BP6PieEzQrpLyt5xSFm2H4jAJDD2PRoV6A=

@@ -1,16 +1,39 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/calypr/forge/metadata"
 )
+
+func TestLogMissingSyfonRecordsPrettyPrintsEachIssue(t *testing.T) {
+	var output bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	logMissingSyfonRecords([]metadata.ReconcileIssue{
+		{SHA256: "aaaa", Paths: []string{"data/a.txt"}},
+		{SHA256: "bbbb", Paths: []string{"data/b.txt", "mirror/b.txt"}},
+	})
+
+	got := output.String()
+	for _, want := range []string{"count=2", "item=1/2", "sha256=aaaa", "paths=data/a.txt", "item=2/2", "sha256=bbbb", `paths="data/b.txt, mirror/b.txt"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning output missing %q:\n%s", want, got)
+		}
+	}
+}
 
 func TestInputDataRetainsAPIEndpoint(t *testing.T) {
 	var input inputData
