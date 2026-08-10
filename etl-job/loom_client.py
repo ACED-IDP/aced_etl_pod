@@ -47,6 +47,7 @@ def load_generation(
     files: list[pathlib.Path],
     access_token: str,
     auth_resource_path: str = "",
+    defer_activation: bool = False,
 ) -> Dict[str, Any]:
     """Upload a complete META snapshot to Loom."""
     url = (
@@ -63,6 +64,8 @@ def load_generation(
         data = {"project": project_id, "generation": generation}
         if auth_resource_path:
             data["auth_resource_path"] = auth_resource_path
+        if defer_activation:
+            data["defer_activation"] = "true"
         logging.info("Uploading %d META files to Loom generation %s", len(files), generation)
         response = requests.post(
             url,

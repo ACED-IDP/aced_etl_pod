@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -103,36 +104,37 @@ func TestListMatchingMissingDirectoryIsEmpty(t *testing.T) {
 	}
 }
 
-func TestPutResourceMultipartContract(t *testing.T) {
+func TestUploadMetadataUsesExistingMultipartGenerationContract(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/projects/program-project/resources/Patient" {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/datasets/program-project/generations/commit" {
 			return nil, fmt.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "bearer token" {
 			return nil, fmt.Errorf("unexpected authorization header: %q", got)
 		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+			return nil, fmt.Errorf("unexpected content type: %q", r.Header.Get("Content-Type"))
+		}
 		if err := r.ParseMultipartForm(1024 * 1024); err != nil {
-			return nil, fmt.Errorf("parse multipart form: %v", err)
+			return nil, err
 		}
-		if got := r.FormValue("auth_resource_path"); got != "/programs/program/projects/project" {
-			return nil, fmt.Errorf("unexpected auth resource path: %q", got)
+		if r.FormValue("project") != "program-project" || r.FormValue("generation") != "commit" || r.FormValue("auth_resource_path") != "/programs/program/projects/project" || r.FormValue("defer_activation") != "true" {
+			return nil, fmt.Errorf("unexpected snapshot fields: project=%q generation=%q auth=%q defer=%q", r.FormValue("project"), r.FormValue("generation"), r.FormValue("auth_resource_path"), r.FormValue("defer_activation"))
 		}
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			return nil, fmt.Errorf("read upload: %v", err)
+		files := r.MultipartForm.File["file"]
+		if len(files) != 1 || files[0].Filename != "Patient.ndjson" {
+			return nil, fmt.Errorf("unexpected multipart files: %#v", files)
 		}
-		defer file.Close()
-		if header.Filename != "Patient.ndjson" {
-			return nil, fmt.Errorf("unexpected filename: %q", header.Filename)
-		}
-		content, err := io.ReadAll(file)
+		file, err := files[0].Open()
 		if err != nil {
 			return nil, err
 		}
-		if string(content) != "{\"resourceType\":\"Patient\"}\n" {
-			return nil, fmt.Errorf("unexpected upload content: %q", content)
+		content, err := io.ReadAll(file)
+		file.Close()
+		if err != nil || string(content) != "{\"resourceType\":\"Patient\"}\n" {
+			return nil, fmt.Errorf("unexpected upload content: %q (err=%v)", content, err)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"state":"STAGED"}`))}, nil
 	})}
 
 	path := filepath.Join(t.TempDir(), "Patient.ndjson")
@@ -146,11 +148,15 @@ func TestPutResourceMultipartContract(t *testing.T) {
 		program:    "program",
 		project:    "project",
 		projectID:  "program-project",
+		input:      inputData{GHCommitHash: "commit"},
 		output:     &outputData{},
 		httpClient: client,
 	}
-	if err := j.putResource("Patient", path); err != nil {
+	if err := j.uploadMetadata(filepath.Dir(path)); err != nil {
 		t.Fatal(err)
+	}
+	if len(j.output.Files) != 1 || j.output.Files[0] != path {
+		t.Fatalf("uploaded files = %v", j.output.Files)
 	}
 }
 
@@ -177,8 +183,287 @@ func TestValidateDocumentReferences(t *testing.T) {
 	}
 }
 
+func TestSnapshotMaterializationAndReleaseContract(t *testing.T) {
+	t.Setenv("LOOM_RECIPE_NAME", "calypr-meta-default")
+	t.Setenv("LOOM_TRANSLATION_VERSION", "deployed-version")
+	t.Setenv("LOOM_RECIPE_OUTPUTS", "DocumentReference")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "DocumentReference.ndjson")
+	if err := os.WriteFile(path, []byte("{\"resourceType\":\"DocumentReference\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		headers := http.Header{"Content-Type": []string{"application/json"}}
+		jsonResponse := func(body string) *http.Response {
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: headers, Body: io.NopCloser(strings.NewReader(body))}
+		}
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/datasets/program-project/generations/commit"):
+			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+				return nil, errors.New("snapshot upload is not multipart")
+			}
+			if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+				return nil, err
+			}
+			if r.FormValue("project") != "program-project" || r.FormValue("generation") != "commit" {
+				return nil, fmt.Errorf("unexpected snapshot fields: %q %q", r.FormValue("project"), r.FormValue("generation"))
+			}
+			return jsonResponse(`{"state":"STAGED"}`), nil
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/generations/commit/activate"):
+			if r.URL.Query().Get("dataframe_execution_id") != "exec-1" || r.URL.Query().Get("auth_resource_path") != "/programs/program/projects/project" {
+				return nil, fmt.Errorf("unexpected activation query: %s", r.URL.RawQuery)
+			}
+			return jsonResponse(`{"activated":true}`), nil
+		case r.URL.Path == "/graphql/graph":
+			var payload struct {
+				Query     string         `json:"query"`
+				Variables map[string]any `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			if strings.Contains(payload.Query, "validateDataframeRecipe") {
+				if !strings.HasPrefix(strings.TrimSpace(payload.Query), "mutation") {
+					return nil, fmt.Errorf("recipe validation must be a mutation: %s", payload.Query)
+				}
+				return jsonResponse(`{"data":{"validateDataframeRecipe":{"name":"calypr-meta-default","recipeDigest":"recipe","translationVersion":"deployed-version","outputs":[{"name":"DocumentReference"}]}}}`), nil
+			}
+			return jsonResponse(`{"data":{"materializeDataframeRecipeBundle":{"id":"exec-1","name":"calypr-meta-default","state":"READY","sourceGeneration":"commit","outputs":[{"name":"DocumentReference","state":"READY"}]}}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	})}
+	j := &job{ctx: context.Background(), token: "token", loomURL: "https://loom.example", program: "program", project: "project", projectID: "program-project", input: inputData{GHCommitHash: "commit"}, output: &outputData{}, httpClient: client}
+	if err := j.snapshotAndActivate(dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(j.output.Files) != 1 || j.output.Files[0] != path {
+		t.Fatalf("uploaded files = %v", j.output.Files)
+	}
+}
+
+func TestSnapshotDoesNotActivateAfterRecipeValidationFailure(t *testing.T) {
+	t.Setenv("LOOM_RECIPE_OUTPUTS", "DocumentReference")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "DocumentReference.ndjson"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	activationCalls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/activate") {
+			activationCalls++
+			return jsonHTTPResponse(`{"activated":true}`), nil
+		}
+		if strings.HasSuffix(r.URL.Path, "/generations/commit") {
+			return jsonHTTPResponse(`{"state":"STAGED"}`), nil
+		}
+		if r.URL.Path == "/graphql/graph" {
+			return jsonHTTPResponse(`{"errors":[{"message":"recipe validation failed","extensions":{"code":"RECIPE_INVALID","retryable":false}}]}`), nil
+		}
+		return nil, fmt.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	})}
+	j := testJob(client)
+	if err := j.snapshotAndActivate(dir); err == nil {
+		t.Fatal("snapshotAndActivate unexpectedly succeeded")
+	}
+	if activationCalls != 0 {
+		t.Fatalf("activation calls = %d after validation failure, want 0", activationCalls)
+	}
+}
+
+func TestSnapshotDoesNotActivateAfterMaterializationFailure(t *testing.T) {
+	t.Setenv("LOOM_RECIPE_OUTPUTS", "DocumentReference")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "DocumentReference.ndjson"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	activationCalls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/activate") {
+			activationCalls++
+			return jsonHTTPResponse(`{"activated":true}`), nil
+		}
+		if strings.HasSuffix(r.URL.Path, "/generations/commit") {
+			return jsonHTTPResponse(`{"state":"STAGED"}`), nil
+		}
+		if r.URL.Path == "/graphql/graph" {
+			var payload struct {
+				Query string `json:"query"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			if strings.Contains(payload.Query, "validateDataframeRecipe") {
+				return jsonHTTPResponse(`{"data":{"validateDataframeRecipe":{"name":"calypr-meta-default","translationVersion":"deployed-version","outputs":[{"name":"DocumentReference"}]}}}`), nil
+			}
+			return jsonHTTPResponse(`{"data":{"materializeDataframeRecipeBundle":{"id":"exec-failed","name":"calypr-meta-default","state":"FAILED","sourceGeneration":"commit","error":"output failed","errorCode":"OUTPUT_FAILED"}}}`), nil
+		}
+		return nil, fmt.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	})}
+	j := testJob(client)
+	if err := j.snapshotAndActivate(dir); err == nil {
+		t.Fatal("snapshotAndActivate unexpectedly succeeded")
+	}
+	if activationCalls != 0 {
+		t.Fatalf("activation calls = %d after materialization failure, want 0", activationCalls)
+	}
+}
+
+func TestConfiguredOutputsFromExplorerSupportsLegacyAndV2(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"explorerConfig":[{"guppyConfig":{"dataType":"DocumentReference"}},{"guppyConfig":{"dataType":"Specimen"}}]}`
+	if err := os.WriteFile(filepath.Join(dir, "other-project.json"), []byte(`{"explorerConfig":[{"dataType":"Ignored"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "program-project.json")
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := testJob(http.DefaultClient)
+	outputs, err := j.configuredOutputsFromExplorer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(outputs, ","), "DocumentReference,Specimen"; got != want {
+		t.Fatalf("legacy outputs = %q, want %q", got, want)
+	}
+	v2 := `{"schemaVersion":2,"projectId":"program-project","explorerConfig":[{"dataType":"ResearchSubject"},{"dataType":"DocumentReference"}]}`
+	if err := os.WriteFile(path, []byte(v2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputs, err = j.configuredOutputsFromExplorer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(outputs, ","), "DocumentReference,ResearchSubject"; got != want {
+		t.Fatalf("v2 outputs = %q, want %q", got, want)
+	}
+}
+
+func TestPublishExplorerConfigsValidatesBeforeCoordinatedActivation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"schemaVersion":2,"projectId":"program-project","explorerConfig":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	requests := make([]string, 0, 3)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		if got := r.Header.Get("Authorization"); got != "bearer token" {
+			return nil, fmt.Errorf("authorization = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		switch r.URL.Path {
+		case "/gecko/explorer/program-project/revisions":
+			if body["targetExecutionId"] != "exec-1" {
+				return nil, fmt.Errorf("unexpected create body: %#v", body)
+			}
+			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"DRAFT"}`), nil
+		case "/gecko/explorer/program-project/revisions/revision-1/validate":
+			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"VALIDATED"}`), nil
+		case "/gecko/explorer/program-project/revisions/revision-1/publish":
+			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"ACTIVE"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected Gecko request: %s", r.URL.Path)
+		}
+	})}
+	j := testJob(client)
+	j.hostname = "https://gen3.example"
+	published, err := j.publishExplorerConfigs(dir, "commit", "exec-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !published {
+		t.Fatal("publishExplorerConfigs() = false, want true")
+	}
+	want := []string{
+		"POST /gecko/explorer/program-project/revisions",
+		"POST /gecko/explorer/program-project/revisions/revision-1/validate",
+		"POST /gecko/explorer/program-project/revisions/revision-1/publish",
+	}
+	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests = %v, want %v", requests, want)
+	}
+}
+
+func TestPublishExplorerConfigsStopsBeforePublishWhenValidationFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"schemaVersion":2,"projectId":"program-project","explorerConfig":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	publishCalls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/publish") {
+			publishCalls++
+		}
+		if strings.HasSuffix(r.URL.Path, "/revisions") {
+			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"DRAFT"}`), nil
+		}
+		if strings.HasSuffix(r.URL.Path, "/validate") {
+			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"INVALID"}`), nil
+		}
+		return nil, fmt.Errorf("unexpected request: %s", r.URL.Path)
+	})}
+	j := testJob(client)
+	j.hostname = "https://gen3.example"
+	if _, err := j.publishExplorerConfigs(dir, "commit", "exec-1"); err == nil {
+		t.Fatal("publishExplorerConfigs() unexpectedly succeeded")
+	}
+	if publishCalls != 0 {
+		t.Fatalf("publish calls = %d, want 0", publishCalls)
+	}
+}
+
+func testJob(client *http.Client) *job {
+	return &job{
+		ctx:        context.Background(),
+		token:      "token",
+		loomURL:    "https://loom.example",
+		program:    "program",
+		project:    "project",
+		projectID:  "program-project",
+		input:      inputData{GHCommitHash: "commit"},
+		output:     &outputData{},
+		httpClient: client,
+	}
+}
+
+func jsonHTTPResponse(body string) *http.Response {
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
+}
+
+func TestValidateRecipeAllowsAdditionalOutputs(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonHTTPResponse(`{"data":{"validateDataframeRecipe":{"name":"calypr-meta-default","recipeDigest":"recipe","translationVersion":"version","outputs":[{"name":"DocumentReference"},{"name":"GroupMember"},{"name":"MedicationAdministration"},{"name":"ResearchSubject"},{"name":"Specimen"}]}}}`), nil
+	})}
+	j := testJob(client)
+	selectors := []dataframeSelector{
+		{Recipe: "calypr-meta-default", Output: "DocumentReference"},
+		{Recipe: "calypr-meta-default", Output: "ResearchSubject"},
+		{Recipe: "calypr-meta-default", Output: "Specimen"},
+	}
+	if _, err := j.validateRecipe("commit", selectors); err != nil {
+		t.Fatalf("validateRecipe() rejected additional recipe outputs: %v", err)
+	}
+}
+
+func TestValidateRecipeRejectsMissingRequiredOutput(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonHTTPResponse(`{"data":{"validateDataframeRecipe":{"name":"calypr-meta-default","recipeDigest":"recipe","translationVersion":"version","outputs":[{"name":"DocumentReference"}]}}}`), nil
+	})}
+	j := testJob(client)
+	selectors := []dataframeSelector{
+		{Recipe: "calypr-meta-default", Output: "DocumentReference"},
+		{Recipe: "calypr-meta-default", Output: "ResearchSubject"},
+	}
+	if _, err := j.validateRecipe("commit", selectors); err == nil || !strings.Contains(err.Error(), `missing required output "ResearchSubject"`) {
+		t.Fatalf("validateRecipe() error = %v", err)
+	}
+}
+
 func TestGraphQLPayloadContainsRecipeBindings(t *testing.T) {
-	t.Setenv("LOOM_RECIPE_NAME", "")
 	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests++
@@ -186,31 +471,20 @@ func TestGraphQLPayloadContainsRecipeBindings(t *testing.T) {
 			return nil, fmt.Errorf("unexpected GraphQL request: %s %s", r.Method, r.URL.Path)
 		}
 		var payload struct {
-			Query     string `json:"query"`
-			Variables struct {
-				Input struct {
-					Name     string `json:"name"`
-					Bindings struct {
-						Project           string   `json:"project"`
-						AuthResourcePaths []string `json:"authResourcePaths"`
-					} `json:"bindings"`
-				} `json:"input"`
-			} `json:"variables"`
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			return nil, err
 		}
-		if strings.Contains(payload.Query, "materializeDataframeRecipeBundle") {
-			input := payload.Variables.Input
-			if input.Name != "calypr-meta-default" || input.Bindings.Project != "program-project" || len(input.Bindings.AuthResourcePaths) != 1 || input.Bindings.AuthResourcePaths[0] != "/programs/program/projects/project" {
-				return nil, fmt.Errorf("unexpected materialization input: %+v", input)
-			}
-			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"data":{"materializeDataframeRecipeBundle":{"id":"exec-1","state":"READY","name":"calypr-meta-default"}}}`))}, nil
+		if !strings.Contains(payload.Query, "materializeDataframeRecipeBundle") {
+			return nil, fmt.Errorf("unexpected GraphQL query: %q", payload.Query)
 		}
-		if strings.Contains(payload.Query, "dataframeRecipeExecution") {
-			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"data":{"dataframeRecipeExecution":{"id":"exec-1","state":"READY","error":null}}}`))}, nil
+		encoded, _ := json.Marshal(payload.Variables)
+		if !strings.Contains(string(encoded), `"name":"calypr-meta-default"`) || !strings.Contains(string(encoded), `"datasetGeneration":"commit"`) {
+			return nil, fmt.Errorf("unexpected materialization variables: %s", encoded)
 		}
-		return nil, fmt.Errorf("unexpected GraphQL query: %q", payload.Query)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"data":{"materializeDataframeRecipeBundle":{"id":"exec-1","name":"calypr-meta-default","state":"READY","sourceGeneration":"commit"}}}`))}, nil
 	})}
 	j := &job{
 		ctx:        context.Background(),
@@ -221,11 +495,43 @@ func TestGraphQLPayloadContainsRecipeBindings(t *testing.T) {
 		projectID:  "program-project",
 		httpClient: client,
 	}
-	if err := j.materialize(); err != nil {
+	if _, err := j.materializeRecipe("commit", recipeValidation{Name: "calypr-meta-default", TranslationVersion: "deployed-version", Outputs: []recipeValidationOutput{{Name: "DocumentReference"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 2 {
-		t.Fatalf("GraphQL requests = %d, want 2", requests)
+	if requests != 1 {
+		t.Fatalf("GraphQL requests = %d, want 1", requests)
+	}
+}
+
+func TestGraphQLPreservesLoomErrorDiagnostics(t *testing.T) {
+	retryable := false
+	j := &job{
+		ctx:     context.Background(),
+		loomURL: "https://loom.example",
+		httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"errors":[{"message":"internal server error","extensions":{"code":"INTERNAL_ERROR","requestId":"request-123","retryable":false,"fieldPath":["outputs","0"]}}]}`)),
+			}, nil
+		})},
+	}
+	err := j.graphql(`query { ignored }`, nil, &struct{}{})
+	if err == nil {
+		t.Fatal("graphql() unexpectedly succeeded")
+	}
+	var got loomGraphQLError
+	if !errors.As(err, &got) {
+		t.Fatalf("error type = %T, want loomGraphQLError", err)
+	}
+	if got.Message != "internal server error" || got.Code != "INTERNAL_ERROR" || got.RequestID != "request-123" || got.Retryable == nil || *got.Retryable != retryable || strings.Join(got.FieldPath, ".") != "outputs.0" {
+		t.Fatalf("unexpected Loom GraphQL error: %#v", got)
+	}
+	for _, want := range []string{"code=INTERNAL_ERROR", "request_id=request-123", "retryable=false", "field_path=outputs.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
 	}
 }
 

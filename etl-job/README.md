@@ -4,9 +4,13 @@ The job is a native Go executable. It keeps the existing Sower environment
 contract (`INPUT_DATA`, `ACCESS_TOKEN`, and `GEN3_HOSTNAME`) and uses the
 exported Git-DRS and Forge Go command packages directly. A successful `put`
 clones and hydrates the repository, generates metadata through Forge's Go
-package,
-uploads each FHIR resource type to Loom, uploads Gecko configuration, and waits
-for Loom's default dataframe recipe materialization.
+package, uploads the complete FHIR snapshot through Loom's multipart generation
+API, validates the deployed recipe registration, and materializes the complete
+recipe bundle without activating it. It then creates an immutable Gecko
+Explorer revision, validates that revision against the exact candidate Loom
+execution, and asks Gecko to publish the compatible pair. Missing required
+Explorer fields therefore block activation. A failed upload, materialization,
+or compatibility check leaves the previous Loom and Gecko revisions active.
 
 ## 1. Authenticate with quay.io
 ```sh
@@ -70,4 +74,25 @@ export LOOM_URL=https://loom.example.org
 
 # Optional recipe override. The default is calypr-meta-default.
 export LOOM_RECIPE_NAME=calypr-meta-default
+
+# Optional deployment assertion. Loom's registered recipe reports the actual
+# translation version; setting this catches Helm/ETL drift.
+# export LOOM_TRANSLATION_VERSION=gen3-util-development-d461f11c7f0ccb078128349ccffd377e4014b62a-extension-columns-v2-research-subject
+# When a repository Explorer config is present, its dataType entries are the
+# required outputs. This variable is the fallback for projects without one.
+export LOOM_RECIPE_OUTPUTS=DocumentReference,ResearchSubject,MedicationAdministration,Specimen,GroupMember
+
+# Alternatively provide exact selectors as JSON (useful for a non-default recipe).
+# export LOOM_REQUIRED_DATAFRAME_SELECTORS='[{"recipe":"my-recipe","output":"DocumentReference"}]'
 ```
+
+The ETL uses the Git commit hash as the immutable Loom generation key. Re-running
+the same commit is safe: generation loading and recipe publication are keyed by
+that commit. The ETL uses Loom's existing multipart
+`POST /api/v1/datasets/:project/generations/:generation` contract and the
+synchronous `materializeDataframeRecipeBundle` GraphQL mutation; it does not
+invent per-resource upload or finalize endpoints. Generation upload uses
+`defer_activation=true`. For a project with an Explorer document, the ETL calls
+Gecko's revision create, validate, and publish endpoints; Gecko performs the
+Loom activation only after strict compatibility validation succeeds. Projects
+without an Explorer document retain the direct Loom activation fallback.
