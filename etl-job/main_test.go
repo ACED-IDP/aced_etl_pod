@@ -340,79 +340,101 @@ func TestConfiguredOutputsFromExplorerSupportsLegacyAndV2(t *testing.T) {
 	}
 }
 
-func TestPublishExplorerConfigsValidatesBeforeCoordinatedActivation(t *testing.T) {
+func TestSyncExplorerConfigsUpsertsDefaultBuilderDraft(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"schemaVersion":2,"projectId":"program-project","explorerConfig":[]}`), 0o600); err != nil {
+	config := `{"explorerConfig":[{"tabTitle":"Files","guppyConfig":{"dataType":"DocumentReference"},"table":{"fields":["file_name"],"columns":{"file_name":{"title":"File name","sortable":true}}}}]}`
+	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	requests := make([]string, 0, 3)
+	requests := make([]string, 0, 2)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		if got := r.Header.Get("Authorization"); got != "bearer token" {
 			return nil, fmt.Errorf("authorization = %q", got)
 		}
-		var body map[string]any
+		if r.URL.Path != "/gecko/builder/projects/program/project/explorers/default" {
+			return nil, fmt.Errorf("unexpected Gecko request: %s", r.URL.Path)
+		}
+		if r.Method == http.MethodGet {
+			return jsonHTTPResponse(`{"configId":"default","draftVersion":4}`), nil
+		}
+		if r.Method != http.MethodPut {
+			return nil, fmt.Errorf("unexpected Gecko method: %s", r.Method)
+		}
+		if got := r.Header.Get("If-Match"); got != `"4"` {
+			return nil, fmt.Errorf("If-Match = %q, want quoted version 4", got)
+		}
+		var body struct {
+			Title  string         `json:"title"`
+			Config map[string]any `json:"config"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			return nil, err
 		}
-		switch r.URL.Path {
-		case "/gecko/explorer/program-project/revisions":
-			if body["targetExecutionId"] != "exec-1" {
-				return nil, fmt.Errorf("unexpected create body: %#v", body)
-			}
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"DRAFT"}`), nil
-		case "/gecko/explorer/program-project/revisions/revision-1/validate":
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"VALIDATED"}`), nil
-		case "/gecko/explorer/program-project/revisions/revision-1/publish":
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"ACTIVE"}`), nil
-		default:
-			return nil, fmt.Errorf("unexpected Gecko request: %s", r.URL.Path)
+		if body.Title != "Default Explorer" {
+			return nil, fmt.Errorf("title = %q", body.Title)
 		}
+		if body.Config["schemaVersion"] != float64(1) {
+			return nil, fmt.Errorf("schemaVersion = %#v", body.Config["schemaVersion"])
+		}
+		tabs, _ := body.Config["tabs"].([]any)
+		if len(tabs) != 1 {
+			return nil, fmt.Errorf("tabs = %#v", tabs)
+		}
+		tab := tabs[0].(map[string]any)
+		if tab["title"] != "Files" || tab["output"] != "DocumentReference" {
+			return nil, fmt.Errorf("tab = %#v", tab)
+		}
+		return jsonHTTPResponse(`{"configId":"default","draftVersion":5}`), nil
 	})}
 	j := testJob(client)
 	j.hostname = "https://gen3.example"
-	published, err := j.publishExplorerConfigs(dir, "commit", "exec-1")
+	configured, err := j.syncExplorerConfigs(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !published {
-		t.Fatal("publishExplorerConfigs() = false, want true")
+	if !configured {
+		t.Fatal("syncExplorerConfigs() = false, want true")
 	}
 	want := []string{
-		"POST /gecko/explorer/program-project/revisions",
-		"POST /gecko/explorer/program-project/revisions/revision-1/validate",
-		"POST /gecko/explorer/program-project/revisions/revision-1/publish",
+		"GET /gecko/builder/projects/program/project/explorers/default",
+		"PUT /gecko/builder/projects/program/project/explorers/default",
 	}
 	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %v, want %v", requests, want)
 	}
 }
 
-func TestPublishExplorerConfigsStopsBeforePublishWhenValidationFails(t *testing.T) {
+func TestSyncExplorerConfigsStopsOnDraftConflict(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"schemaVersion":2,"projectId":"program-project","explorerConfig":[]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"schemaVersion":1,"tabs":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	publishCalls := 0
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if strings.HasSuffix(r.URL.Path, "/publish") {
-			publishCalls++
+		if r.Method == http.MethodGet {
+			return jsonHTTPResponse(`{"configId":"default","draftVersion":2}`), nil
 		}
-		if strings.HasSuffix(r.URL.Path, "/revisions") {
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"DRAFT"}`), nil
-		}
-		if strings.HasSuffix(r.URL.Path, "/validate") {
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"INVALID"}`), nil
-		}
-		return nil, fmt.Errorf("unexpected request: %s", r.URL.Path)
+		return &http.Response{StatusCode: http.StatusConflict, Status: "409 Conflict", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"code":"DRAFT_CONFLICT"}`))}, nil
 	})}
 	j := testJob(client)
 	j.hostname = "https://gen3.example"
-	if _, err := j.publishExplorerConfigs(dir, "commit", "exec-1"); err == nil {
-		t.Fatal("publishExplorerConfigs() unexpectedly succeeded")
+	if _, err := j.syncExplorerConfigs(dir); err == nil {
+		t.Fatal("syncExplorerConfigs() unexpectedly succeeded")
 	}
-	if publishCalls != 0 {
-		t.Fatalf("publish calls = %d, want 0", publishCalls)
+}
+
+func TestNormalizeExplorerBuilderDocumentPreservesV1(t *testing.T) {
+	document := []byte(`{"schemaVersion":1,"tabs":[{"id":"files","title":"Files","output":"DocumentReference","table":{"columns":[]}}]}`)
+	normalized, err := normalizeExplorerBuilderDocument(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(normalized, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["schemaVersion"] != float64(1) || len(got["tabs"].([]any)) != 1 {
+		t.Fatalf("normalized = %#v", got)
 	}
 }
 

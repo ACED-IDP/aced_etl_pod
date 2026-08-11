@@ -368,20 +368,20 @@ func (j *job) put() error {
 	if err != nil {
 		return err
 	}
-	if err := runOperation("stage and publish FHIR metadata with Explorer configuration", func() error {
+	if err := runOperation("stage FHIR metadata and synchronize Explorer configuration", func() error {
 		generation, execution, err := j.materializeSnapshot(loadPath, selectors)
 		if err != nil {
 			return err
 		}
-		published, err := j.publishExplorerConfigs(configPath, generation, execution.ID)
+		configured, err := j.syncExplorerConfigs(configPath)
 		if err != nil {
 			return err
 		}
-		if published {
-			return nil
-		}
 		if err := j.activateGeneration(generation, execution.ID); err != nil {
-			return fmt.Errorf("activate Loom generation without Explorer configuration: %w", err)
+			return fmt.Errorf("activate Loom generation: %w", err)
+		}
+		if configured {
+			slog.Info("synchronized default Explorer builder draft", "project", j.projectID, "generation", generation)
 		}
 		return nil
 	}); err != nil {
@@ -524,112 +524,128 @@ func (j *job) snapshotAndActivate(dir string) error {
 	return nil
 }
 
-func (j *job) uploadConfigs(dir string) error {
-	files, err := listJSON(dir)
-	if err != nil {
-		return err
-	}
-	slog.Info("starting Gecko configuration upload", "files", len(files))
-	for _, path := range files {
-		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		parts := strings.Split(base, "-")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			slog.Warn("skipping config file without project suffix", "file", filepath.Base(path))
-			continue
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read config %s: %w", filepath.Base(path), err)
-		}
-		endpoint := fmt.Sprintf("%s/gecko/explorer/%s", j.hostname, url.PathEscape(base))
-		slog.Info("uploading Gecko explorer config", "config", base)
-		req, err := http.NewRequestWithContext(j.ctx, http.MethodPut, endpoint, bytes.NewReader(content))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "bearer "+j.token)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := j.httpClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("upload config %s: %w", filepath.Base(path), err)
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			err := responseError(resp)
-			resp.Body.Close()
-			return fmt.Errorf("upload config %s: %w", filepath.Base(path), err)
-		}
-		resp.Body.Close()
-		slog.Info("uploaded Gecko explorer config", "status", resp.StatusCode, "config", base)
-	}
-	return nil
+type explorerBuilderState struct {
+	ConfigID     string `json:"configId"`
+	DraftVersion int64  `json:"draftVersion"`
 }
 
-type explorerRevisionResponse struct {
-	RevisionID string `json:"revisionId"`
-	Status     string `json:"status"`
-}
-
-// publishExplorerConfigs registers the repository overlay as an immutable
-// Gecko revision, validates it against the exact candidate Loom execution,
-// and asks Gecko to coordinate activation. This keeps the active dataframe and
-// Explorer document on the same generation even if the process crashes during
-// the final publication request.
-func (j *job) publishExplorerConfigs(dir, generation, executionID string) (bool, error) {
+// syncExplorerConfigs upserts the repository Explorer document as the
+// project's default Gecko builder draft. Immutable validation, publication,
+// and activation remain explicit builder actions because they require a READY
+// project recipe revision rather than the registered-recipe execution used by
+// this ETL pipeline.
+func (j *job) syncExplorerConfigs(dir string) (bool, error) {
 	files, err := listJSON(dir)
 	if err != nil {
 		return false, err
 	}
-	published := false
+	configured := false
 	for _, path := range files {
-		configID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		if configID != j.projectID {
+		projectConfigID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if projectConfigID != j.projectID {
 			continue
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return false, fmt.Errorf("read config %s: %w", filepath.Base(path), err)
 		}
-		var overlay json.RawMessage = content
-		var created explorerRevisionResponse
-		createPath := fmt.Sprintf("/gecko/explorer/%s/revisions", url.PathEscape(configID))
-		var header struct {
-			SchemaVersion int `json:"schemaVersion"`
-		}
-		_ = json.Unmarshal(content, &header)
-		if header.SchemaVersion >= 2 {
-			err = j.geckoJSON(http.MethodPost, createPath, map[string]any{"overlay": overlay, "targetExecutionId": executionID}, &created)
-		} else {
-			// Gecko's migration adapter accepts the complete legacy expanded
-			// document directly and preserves it while validating exact physical
-			// field names against the candidate schema.
-			err = j.geckoRawJSON(http.MethodPost, createPath, content, &created)
-		}
+		document, err := normalizeExplorerBuilderDocument(content)
 		if err != nil {
-			return false, fmt.Errorf("create Gecko Explorer revision %s: %w", configID, err)
+			return false, fmt.Errorf("normalize config %s: %w", filepath.Base(path), err)
 		}
-		if strings.TrimSpace(created.RevisionID) == "" {
-			return false, fmt.Errorf("create Gecko Explorer revision %s: response has no revisionId", configID)
+		builderPath := fmt.Sprintf(
+			"/gecko/builder/projects/%s/%s/explorers/default",
+			url.PathEscape(j.program),
+			url.PathEscape(j.project),
+		)
+		var current explorerBuilderState
+		if err := j.geckoJSON(http.MethodGet, builderPath, nil, &current); err != nil {
+			return false, fmt.Errorf("read Gecko Explorer builder draft %s: %w", projectConfigID, err)
 		}
-		var validated explorerRevisionResponse
-		validatePath := fmt.Sprintf("/gecko/explorer/%s/revisions/%s/validate", url.PathEscape(configID), url.PathEscape(created.RevisionID))
-		if err := j.geckoJSON(http.MethodPost, validatePath, map[string]any{"loomExecutionId": executionID}, &validated); err != nil {
-			return false, fmt.Errorf("validate Gecko Explorer revision %s: %w", configID, err)
+		body, err := json.Marshal(map[string]any{
+			"title":  "Default Explorer",
+			"config": json.RawMessage(document),
+		})
+		if err != nil {
+			return false, err
 		}
-		if !strings.EqualFold(validated.Status, "VALIDATED") && !strings.EqualFold(validated.Status, "VALID") && !strings.EqualFold(validated.Status, "VALID_WITH_OMISSIONS") {
-			return false, fmt.Errorf("validate Gecko Explorer revision %s: incompatible status %q", configID, validated.Status)
+		headers := http.Header{"If-Match": []string{fmt.Sprintf(`"%d"`, current.DraftVersion)}}
+		var saved explorerBuilderState
+		if err := j.geckoRawJSONWithHeaders(http.MethodPut, builderPath, body, headers, &saved); err != nil {
+			return false, fmt.Errorf("save Gecko Explorer builder draft %s: %w", projectConfigID, err)
 		}
-		var activated explorerRevisionResponse
-		publishPath := fmt.Sprintf("/gecko/explorer/%s/revisions/%s/publish", url.PathEscape(configID), url.PathEscape(created.RevisionID))
-		if err := j.geckoJSON(http.MethodPost, publishPath, map[string]any{"loomExecutionId": executionID}, &activated); err != nil {
-			return false, fmt.Errorf("publish Gecko Explorer revision %s: %w", configID, err)
-		}
-		if !strings.EqualFold(activated.Status, "ACTIVE") {
-			return false, fmt.Errorf("publish Gecko Explorer revision %s: status %q, want ACTIVE", configID, activated.Status)
-		}
-		published = true
-		slog.Info("published compatible Loom and Gecko revisions", "config", configID, "config_revision", created.RevisionID, "loom_execution", executionID, "generation", generation)
+		configured = true
+		slog.Info("saved Gecko Explorer builder draft", "project", j.projectID, "config", "default", "draft_version", saved.DraftVersion)
 	}
-	return published, nil
+	return configured, nil
+}
+
+func normalizeExplorerBuilderDocument(content []byte) (json.RawMessage, error) {
+	var document map[string]any
+	if err := json.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	if version, _ := document["schemaVersion"].(float64); int(version) == 1 {
+		if _, ok := document["tabs"].([]any); ok {
+			return json.Marshal(document)
+		}
+	}
+	panels, ok := document["explorerConfig"].([]any)
+	if !ok {
+		return nil, errors.New("Explorer document must contain explorerConfig or schemaVersion 1 tabs")
+	}
+	tabs := make([]any, 0, len(panels))
+	for index, candidate := range panels {
+		panel, ok := candidate.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("explorerConfig[%d] must be an object", index)
+		}
+		tab := make(map[string]any, len(panel)+4)
+		for key, value := range panel {
+			tab[key] = value
+		}
+		tab["id"] = fmt.Sprintf("tab-%d", index+1)
+		if title, _ := panel["tabTitle"].(string); title != "" {
+			tab["title"] = title
+		} else if _, ok := tab["title"].(string); !ok {
+			tab["title"] = fmt.Sprintf("Tab %d", index+1)
+		}
+		output, _ := panel["dataType"].(string)
+		if guppy, ok := panel["guppyConfig"].(map[string]any); ok && output == "" {
+			output, _ = guppy["dataType"].(string)
+		}
+		tab["output"] = output
+		if table, ok := panel["table"].(map[string]any); ok {
+			normalizedTable := make(map[string]any, len(table))
+			for key, value := range table {
+				normalizedTable[key] = value
+			}
+			if fields, ok := table["fields"].([]any); ok {
+				columnMap, _ := table["columns"].(map[string]any)
+				columns := make([]any, 0, len(fields))
+				for _, rawField := range fields {
+					field, ok := rawField.(string)
+					if !ok || field == "" {
+						continue
+					}
+					column := map[string]any{"field": field}
+					if configured, ok := columnMap[field].(map[string]any); ok {
+						for key, value := range configured {
+							column[key] = value
+						}
+					}
+					columns = append(columns, column)
+				}
+				normalizedTable["columns"] = columns
+			}
+			tab["table"] = normalizedTable
+		}
+		tabs = append(tabs, tab)
+	}
+	delete(document, "explorerConfig")
+	document["schemaVersion"] = 1
+	document["tabs"] = tabs
+	return json.Marshal(document)
 }
 
 func (j *job) geckoJSON(method, path string, input any, output any) error {
@@ -645,6 +661,10 @@ func (j *job) geckoJSON(method, path string, input any, output any) error {
 }
 
 func (j *job) geckoRawJSON(method, path string, encoded []byte, output any) error {
+	return j.geckoRawJSONWithHeaders(method, path, encoded, nil, output)
+}
+
+func (j *job) geckoRawJSONWithHeaders(method, path string, encoded []byte, headers http.Header, output any) error {
 	var body io.Reader
 	if encoded != nil {
 		body = bytes.NewReader(encoded)
@@ -656,6 +676,11 @@ func (j *job) geckoRawJSON(method, path string, encoded []byte, output any) erro
 		return err
 	}
 	req.Header.Set("Authorization", "bearer "+j.token)
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	if encoded != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

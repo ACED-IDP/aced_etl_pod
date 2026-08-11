@@ -6,11 +6,12 @@ exported Git-DRS and Forge Go command packages directly. A successful `put`
 clones and hydrates the repository, generates metadata through Forge's Go
 package, uploads the complete FHIR snapshot through Loom's multipart generation
 API, validates the deployed recipe registration, and materializes the complete
-recipe bundle without activating it. It then creates an immutable Gecko
-Explorer revision, validates that revision against the exact candidate Loom
-execution, and asks Gecko to publish the compatible pair. Missing required
-Explorer fields therefore block activation. A failed upload, materialization,
-or compatibility check leaves the previous Loom and Gecko revisions active.
+recipe bundle without activating it. When the repository includes an Explorer
+configuration, the ETL converts it to the schema-version-1 authoring document
+and upserts Gecko's project-scoped `default` Explorer builder draft with quoted
+version compare-and-swap. The ETL then activates the Loom generation. Immutable
+Explorer validation, publication, and activation remain explicit browser
+actions because they require a READY project recipe revision.
 
 ## 1. Authenticate with quay.io
 ```sh
@@ -92,7 +93,7 @@ that commit. The ETL uses Loom's existing multipart
 `POST /api/v1/datasets/:project/generations/:generation` contract and the
 synchronous `materializeDataframeRecipeBundle` GraphQL mutation; it does not
 invent per-resource upload or finalize endpoints. Generation upload uses
-`defer_activation=true`. For a project with an Explorer document, the ETL calls
-Gecko's revision create, validate, and publish endpoints; Gecko performs the
-Loom activation only after strict compatibility validation succeeds. Projects
-without an Explorer document retain the direct Loom activation fallback.
+`defer_activation=true`. For a project with an Explorer document, the ETL reads
+and updates `/gecko/builder/projects/:org/:project/explorers/default`; it no
+longer calls the removed `/gecko/explorer/:configId` publication API. Projects
+without an Explorer document simply activate the materialized Loom generation.
