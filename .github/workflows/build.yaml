@@ -5,7 +5,29 @@ on:
   workflow_dispatch:
 
 jobs:
+  go-test:
+    name: Test Go ETL
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: etl-job/go.mod
+          cache-dependency-path: etl-job/go.sum
+
+      - name: Run Go tests
+        working-directory: etl-job
+        run: go test ./...
+
+      - name: Run Go vet
+        working-directory: etl-job
+        run: go vet ./...
+
   build:
+    needs: go-test
     strategy:
       matrix:
         include:
@@ -17,7 +39,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Login to Quay.io
         uses: docker/login-action@v2
@@ -27,18 +49,15 @@ jobs:
           password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 
       - name: Build and Push Architecture-Specific Image
-        id: build
         run: |
           BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
           REPO=quay.io/ohsu-comp-bio/aced-etl
           # We tag it with the architecture suffix (e.g., :main-arm64)
           TAG="$REPO:$BRANCH-${{ matrix.arch }}"
-          
-          docker build -t $TAG ./etl-job
-          docker push $TAG
-          
-          # Pass the tag to the next job
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+          # The ETL image is built exclusively from the Go module.
+          docker build --pull -f etl-job/Dockerfile -t "$TAG" etl-job
+          docker push "$TAG"
 
   # New job to create the "Manifest List" (the thing that points to both)
   create-manifest:
@@ -56,12 +75,12 @@ jobs:
         run: |
           BRANCH=$(echo ${GITHUB_REF#refs/*/} | tr / _)
           REPO=quay.io/ohsu-comp-bio/aced-etl
-          
+
           # Create the manifest pointing to both specific images
           docker manifest create $REPO:$BRANCH \
             $REPO:$BRANCH-amd64 \
             $REPO:$BRANCH-arm64
-          
+
           docker manifest push $REPO:$BRANCH
 
           # Add 'latest' tag if on main branch
