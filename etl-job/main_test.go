@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/calypr/forge/metadata"
 )
@@ -79,6 +80,22 @@ func TestRedactInputPacket(t *testing.T) {
 	}
 	if strings.Contains(got, "secret") || !strings.Contains(got, "[REDACTED]") {
 		t.Fatalf("redacted packet exposed token: %s", got)
+	}
+}
+
+func TestLoomGenerationDefaultsToGitCommit(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 18, 30, 45, 123456789, time.UTC)
+	input := inputData{GHCommitHash: " commit-a "}
+	if got := loomGeneration(input, now); got != "commit-a" {
+		t.Fatalf("loomGeneration() = %q, want %q", got, "commit-a")
+	}
+}
+
+func TestLoomGenerationForceRefreshCreatesFreshImmutableGeneration(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 18, 30, 45, 123456789, time.FixedZone("PDT", -7*60*60))
+	input := inputData{GHCommitHash: "commit-a", ForceLoomRefresh: true}
+	if got, want := loomGeneration(input, now), "commit-a-refresh-20260813T013045.123456789Z"; got != want {
+		t.Fatalf("loomGeneration() = %q, want %q", got, want)
 	}
 }
 
@@ -309,110 +326,65 @@ func TestSnapshotDoesNotActivateAfterMaterializationFailure(t *testing.T) {
 	}
 }
 
-func TestConfiguredOutputsFromExplorerSupportsLegacyAndV2(t *testing.T) {
+func TestReadRepositoryExplorerDefinitionRequiresExactV2(t *testing.T) {
 	dir := t.TempDir()
-	legacy := `{"explorerConfig":[{"guppyConfig":{"dataType":"DocumentReference"}},{"guppyConfig":{"dataType":"Specimen"}}]}`
-	if err := os.WriteFile(filepath.Join(dir, "other-project.json"), []byte(`{"explorerConfig":[{"dataType":"Ignored"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "program-project.json")
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+	config := `{"apiVersion":"loom.calypr.org/explorer-config/v2","kind":"ExplorerConfig","project":"program-project","explorer":{"id":"default","title":"Default","management":"repository"},"recipe":{"recipeSchemaVersion":1,"name":"recipe","translationVersion":"v1","outputs":[{"name":"Patient","rootResourceType":"Patient","rowGrain":"patient","fields":[{"name":"id","expr":{"select":"root.id"}}]}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	j := testJob(http.DefaultClient)
-	outputs, err := j.configuredOutputsFromExplorer(dir)
-	if err != nil {
+	got, present, err := j.readRepositoryExplorerDefinition(dir)
+	if err != nil || !present || string(got) != config {
+		t.Fatalf("definition = %s, present=%v, err=%v", got, present, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"explorerConfig":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(outputs, ","), "DocumentReference,Specimen"; got != want {
-		t.Fatalf("legacy outputs = %q, want %q", got, want)
+	if _, _, err := j.readRepositoryExplorerDefinition(dir); err == nil {
+		t.Fatal("legacy document accepted")
 	}
-	v2 := `{"schemaVersion":2,"projectId":"program-project","explorerConfig":[{"dataType":"ResearchSubject"},{"dataType":"DocumentReference"}]}`
-	if err := os.WriteFile(path, []byte(v2), 0o600); err != nil {
+	withPresentation := strings.TrimSuffix(config, "}") + `,"views":[{"id":"patient","title":"Patients","output":"Patient","table":{"columns":[{"column":"id","visible":true}]}}]}`
+	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(withPresentation), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outputs, err = j.configuredOutputsFromExplorer(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := strings.Join(outputs, ","), "DocumentReference,ResearchSubject"; got != want {
-		t.Fatalf("v2 outputs = %q, want %q", got, want)
+	if got, present, err := j.readRepositoryExplorerDefinition(dir); err != nil || !present || string(got) != withPresentation {
+		t.Fatalf("repository presentation = %s, present=%v, err=%v", got, present, err)
 	}
 }
 
-func TestPublishExplorerConfigsValidatesBeforeCoordinatedActivation(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"schemaVersion":2,"projectId":"program-project","explorerConfig":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	requests := make([]string, 0, 3)
+func TestRepositoryDeployUsesV2RESTEndpoint(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		requests = append(requests, r.Method+" "+r.URL.Path)
-		if got := r.Header.Get("Authorization"); got != "bearer token" {
-			return nil, fmt.Errorf("authorization = %q", got)
+		if r.URL.Path != "/api/v1/projects/program-project/generations/commit/explorer-config" || r.Method != http.MethodPost {
+			return nil, fmt.Errorf("unexpected request %s", r.URL.Path)
 		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			return nil, err
+		if r.Header.Get("X-Loom-Source-Commit") != "commit" {
+			return nil, fmt.Errorf("missing source commit")
 		}
-		switch r.URL.Path {
-		case "/gecko/explorer/program-project/revisions":
-			if body["targetExecutionId"] != "exec-1" {
-				return nil, fmt.Errorf("unexpected create body: %#v", body)
-			}
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"DRAFT"}`), nil
-		case "/gecko/explorer/program-project/revisions/revision-1/validate":
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"VALIDATED"}`), nil
-		case "/gecko/explorer/program-project/revisions/revision-1/publish":
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"ACTIVE"}`), nil
-		default:
-			return nil, fmt.Errorf("unexpected Gecko request: %s", r.URL.Path)
-		}
+		return jsonHTTPResponse(`{"project":"program-project","generation":"commit","activated":true,"executionId":"execution-1","recipe":"explorer_program-project_default","translationVersion":"repository-commit"}`), nil
 	})}
 	j := testJob(client)
-	j.hostname = "https://gen3.example"
-	published, err := j.publishExplorerConfigs(dir, "commit", "exec-1")
-	if err != nil {
+	if err := j.deployRepositoryExplorerConfigV2(json.RawMessage(`{"apiVersion":"loom.calypr.org/explorer-config/v2"}`)); err != nil {
 		t.Fatal(err)
-	}
-	if !published {
-		t.Fatal("publishExplorerConfigs() = false, want true")
-	}
-	want := []string{
-		"POST /gecko/explorer/program-project/revisions",
-		"POST /gecko/explorer/program-project/revisions/revision-1/validate",
-		"POST /gecko/explorer/program-project/revisions/revision-1/publish",
-	}
-	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("requests = %v, want %v", requests, want)
 	}
 }
 
-func TestPublishExplorerConfigsStopsBeforePublishWhenValidationFails(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "program-project.json"), []byte(`{"schemaVersion":2,"projectId":"program-project","explorerConfig":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	publishCalls := 0
+func TestRepositoryDeployRejectsMissingExecutableIdentity(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if strings.HasSuffix(r.URL.Path, "/publish") {
-			publishCalls++
-		}
-		if strings.HasSuffix(r.URL.Path, "/revisions") {
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"DRAFT"}`), nil
-		}
-		if strings.HasSuffix(r.URL.Path, "/validate") {
-			return jsonHTTPResponse(`{"revisionId":"revision-1","status":"INVALID"}`), nil
-		}
-		return nil, fmt.Errorf("unexpected request: %s", r.URL.Path)
+		return jsonHTTPResponse(`{"project":"program-project","generation":"commit","activated":true,"executionId":"execution-1"}`), nil
 	})}
 	j := testJob(client)
-	j.hostname = "https://gen3.example"
-	if _, err := j.publishExplorerConfigs(dir, "commit", "exec-1"); err == nil {
-		t.Fatal("publishExplorerConfigs() unexpectedly succeeded")
+	if err := j.deployRepositoryExplorerConfigV2(json.RawMessage(`{"apiVersion":"loom.calypr.org/explorer-config/v2"}`)); err == nil || !strings.Contains(err.Error(), "inconsistent deployment identity") {
+		t.Fatalf("error = %v, want inconsistent deployment identity", err)
 	}
-	if publishCalls != 0 {
-		t.Fatalf("publish calls = %d, want 0", publishCalls)
+}
+
+func TestRepositoryDeployRejectsWrongExecutableIdentity(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonHTTPResponse(`{"project":"program-project","generation":"commit","activated":true,"executionId":"execution-1","recipe":"calypr-meta-default","translationVersion":"v1"}`), nil
+	})}
+	j := testJob(client)
+	if err := j.deployRepositoryExplorerConfigV2(json.RawMessage(`{"apiVersion":"loom.calypr.org/explorer-config/v2"}`)); err == nil || !strings.Contains(err.Error(), "inconsistent deployment identity") {
+		t.Fatalf("error = %v, want inconsistent deployment identity", err)
 	}
 }
 

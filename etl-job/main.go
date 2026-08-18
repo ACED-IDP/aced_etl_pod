@@ -42,15 +42,16 @@ const (
 var workingDirectoryMu sync.Mutex
 
 type inputData struct {
-	Method       string `json:"method"`
-	ProjectID    string `json:"projectId"`
-	GHUserName   string `json:"ghUserName"`
-	GHToken      string `json:"ghToken"`
-	GHCommitHash string `json:"ghCommitHash"`
-	GHRepoURL    string `json:"ghRepoUrl"`
-	BucketName   string `json:"bucketName"`
-	Profile      string `json:"profile"`
-	APIEndpoint  string `json:"APIEndpoint"`
+	Method           string `json:"method"`
+	ProjectID        string `json:"projectId"`
+	GHUserName       string `json:"ghUserName"`
+	GHToken          string `json:"ghToken"`
+	GHCommitHash     string `json:"ghCommitHash"`
+	GHRepoURL        string `json:"ghRepoUrl"`
+	BucketName       string `json:"bucketName"`
+	Profile          string `json:"profile"`
+	APIEndpoint      string `json:"APIEndpoint"`
+	ForceLoomRefresh bool   `json:"forceLoomRefresh,omitempty"`
 }
 
 type outputData struct {
@@ -67,6 +68,7 @@ type job struct {
 	program    string
 	project    string
 	projectID  string
+	generation string
 	input      inputData
 	output     *outputData
 	httpClient *http.Client
@@ -202,20 +204,22 @@ func main() {
 	logger.Info("starting ETL", "method", input.Method, "project_id", input.ProjectID, "user", output.User)
 
 	j := &job{
-		ctx:       ctx,
-		token:     token,
-		hostname:  hostname,
-		loomURL:   strings.TrimRight(envOr("LOOM_URL", hostname+"/loom"), "/"),
-		program:   program,
-		project:   project,
-		projectID: input.ProjectID,
-		input:     input,
-		output:    output,
+		ctx:        ctx,
+		token:      token,
+		hostname:   hostname,
+		loomURL:    strings.TrimRight(envOr("LOOM_URL", hostname+"/loom"), "/"),
+		program:    program,
+		project:    project,
+		projectID:  input.ProjectID,
+		generation: loomGeneration(input, time.Now()),
+		input:      input,
+		output:     output,
 		// Individual Loom calls apply their own request or upload deadline. A
 		// client-wide timeout would truncate large NDJSON uploads before the
 		// uploadTimeout context can take effect.
 		httpClient: &http.Client{Timeout: 0},
 	}
+	logger.Info("resolved Loom generation", "source_commit", input.GHCommitHash, "generation", j.generation, "forced_refresh", input.ForceLoomRefresh)
 
 	if strings.EqualFold(input.Method, "put") {
 		err = j.put()
@@ -360,30 +364,18 @@ func (j *job) put() error {
 		return err
 	}
 	configPath := filepath.Join(targetDir, configDir)
-	requiredOutputs, err := j.configuredOutputsFromExplorer(configPath)
-	if err != nil {
-		return fmt.Errorf("derive dataframe outputs from Explorer configuration: %w", err)
-	}
-	selectors, err := configuredSelectors(requiredOutputs)
+	definition, present, err := j.readRepositoryExplorerDefinition(configPath)
 	if err != nil {
 		return err
 	}
-	if err := runOperation("stage and publish FHIR metadata with Explorer configuration", func() error {
-		generation, execution, err := j.materializeSnapshot(loadPath, selectors)
-		if err != nil {
+	if err := runOperation("stage FHIR metadata and deploy repository Explorer", func() error {
+		if !present {
+			return j.snapshotAndActivate(loadPath)
+		}
+		if err := j.uploadMetadata(loadPath); err != nil {
 			return err
 		}
-		published, err := j.publishExplorerConfigs(configPath, generation, execution.ID)
-		if err != nil {
-			return err
-		}
-		if published {
-			return nil
-		}
-		if err := j.activateGeneration(generation, execution.ID); err != nil {
-			return fmt.Errorf("activate Loom generation without Explorer configuration: %w", err)
-		}
-		return nil
+		return j.deployRepositoryExplorerConfigV2(definition)
 	}); err != nil {
 		return err
 	}
@@ -442,7 +434,7 @@ func (j *job) uploadMetadata(dir string) error {
 	if err := multipartWriter.WriteField("project", j.projectID); err != nil {
 		return err
 	}
-	if err := multipartWriter.WriteField("generation", strings.TrimSpace(j.input.GHCommitHash)); err != nil {
+	if err := multipartWriter.WriteField("generation", j.loomGeneration()); err != nil {
 		return err
 	}
 	if err := multipartWriter.WriteField("auth_resource_path", fmt.Sprintf("/programs/%s/projects/%s", j.program, j.project)); err != nil {
@@ -454,8 +446,8 @@ func (j *job) uploadMetadata(dir string) error {
 	if err := multipartWriter.Close(); err != nil {
 		return err
 	}
-	endpoint := fmt.Sprintf("%s/api/v1/datasets/%s/generations/%s", j.loomURL, url.PathEscape(j.projectID), url.PathEscape(strings.TrimSpace(j.input.GHCommitHash)))
-	slog.Info("uploading complete FHIR snapshot to Loom", "files", len(files), "project_id", j.projectID, "generation", j.input.GHCommitHash)
+	endpoint := fmt.Sprintf("%s/api/v1/datasets/%s/generations/%s", j.loomURL, url.PathEscape(j.projectID), url.PathEscape(j.loomGeneration()))
+	slog.Info("uploading complete FHIR snapshot to Loom", "files", len(files), "project_id", j.projectID, "generation", j.loomGeneration(), "source_commit", j.input.GHCommitHash)
 	for attempt := 1; attempt <= maxRequestAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(j.ctx, uploadTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body.Bytes()))
@@ -488,7 +480,7 @@ func (j *job) uploadMetadata(dir string) error {
 }
 
 func (j *job) materializeSnapshot(dir string, selectors []dataframeSelector) (string, recipeExecution, error) {
-	generation := strings.TrimSpace(j.input.GHCommitHash)
+	generation := j.loomGeneration()
 	if err := j.uploadMetadata(dir); err != nil {
 		return "", recipeExecution{}, err
 	}
@@ -513,6 +505,21 @@ func (j *job) materializeSnapshot(dir string, selectors []dataframeSelector) (st
 	return generation, execution, nil
 }
 
+func loomGeneration(input inputData, now time.Time) string {
+	commit := strings.TrimSpace(input.GHCommitHash)
+	if !input.ForceLoomRefresh {
+		return commit
+	}
+	return commit + "-refresh-" + now.UTC().Format("20060102T150405.000000000Z")
+}
+
+func (j *job) loomGeneration() string {
+	if generation := strings.TrimSpace(j.generation); generation != "" {
+		return generation
+	}
+	return strings.TrimSpace(j.input.GHCommitHash)
+}
+
 func (j *job) snapshotAndActivate(dir string) error {
 	generation, execution, err := j.materializeSnapshot(dir, nil)
 	if err != nil {
@@ -524,201 +531,88 @@ func (j *job) snapshotAndActivate(dir string) error {
 	return nil
 }
 
-func (j *job) uploadConfigs(dir string) error {
-	files, err := listJSON(dir)
+type explorerConfigV2 struct {
+	APIVersion    string          `json:"apiVersion"`
+	Kind          string          `json:"kind"`
+	Project       string          `json:"project"`
+	Explorer      explorerOwner   `json:"explorer"`
+	Recipe        json.RawMessage `json:"recipe"`
+	Views         json.RawMessage `json:"views"`
+	SharedFilters json.RawMessage `json:"sharedFilters,omitempty"`
+	FileActions   json.RawMessage `json:"fileActions,omitempty"`
+}
+type explorerOwner struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Management  string `json:"management"`
+}
+
+// readRepositoryExplorerDefinition accepts the repository V2 packet. It may
+// be baseline-only or may include the complete ETL-authored presentation
+// layer. Loom performs the authoritative validation and preserves the packet
+// unchanged through publication.
+func (j *job) readRepositoryExplorerDefinition(dir string) (json.RawMessage, bool, error) {
+	path := filepath.Join(dir, j.projectID+".json")
+	content, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
 	if err != nil {
-		return err
+		return nil, false, fmt.Errorf("read repository Explorer definition: %w", err)
 	}
-	slog.Info("starting Gecko configuration upload", "files", len(files))
-	for _, path := range files {
-		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		parts := strings.Split(base, "-")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			slog.Warn("skipping config file without project suffix", "file", filepath.Base(path))
-			continue
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read config %s: %w", filepath.Base(path), err)
-		}
-		endpoint := fmt.Sprintf("%s/gecko/explorer/%s", j.hostname, url.PathEscape(base))
-		slog.Info("uploading Gecko explorer config", "config", base)
-		req, err := http.NewRequestWithContext(j.ctx, http.MethodPut, endpoint, bytes.NewReader(content))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "bearer "+j.token)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := j.httpClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("upload config %s: %w", filepath.Base(path), err)
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			err := responseError(resp)
-			resp.Body.Close()
-			return fmt.Errorf("upload config %s: %w", filepath.Base(path), err)
-		}
-		resp.Body.Close()
-		slog.Info("uploaded Gecko explorer config", "status", resp.StatusCode, "config", base)
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	var definition explorerConfigV2
+	if err := decoder.Decode(&definition); err != nil {
+		return nil, false, fmt.Errorf("decode repository Explorer definition %s: %w", filepath.Base(path), err)
 	}
-	return nil
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, false, fmt.Errorf("decode repository Explorer definition %s: trailing JSON", filepath.Base(path))
+	}
+	if definition.APIVersion != "loom.calypr.org/explorer-config/v2" || definition.Kind != "ExplorerConfig" || definition.Project != j.projectID || definition.Explorer.ID != "default" || definition.Explorer.Management != "repository" || strings.TrimSpace(definition.Explorer.Title) == "" || len(definition.Recipe) == 0 {
+		return nil, false, fmt.Errorf("repository Explorer definition %s must be ExplorerConfigV2 for project %q", filepath.Base(path), j.projectID)
+	}
+	return json.RawMessage(content), true, nil
 }
 
-type explorerRevisionResponse struct {
-	RevisionID string `json:"revisionId"`
-	Status     string `json:"status"`
-}
-
-// publishExplorerConfigs registers the repository overlay as an immutable
-// Gecko revision, validates it against the exact candidate Loom execution,
-// and asks Gecko to coordinate activation. This keeps the active dataframe and
-// Explorer document on the same generation even if the process crashes during
-// the final publication request.
-func (j *job) publishExplorerConfigs(dir, generation, executionID string) (bool, error) {
-	files, err := listJSON(dir)
-	if err != nil {
-		return false, err
-	}
-	published := false
-	for _, path := range files {
-		configID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		if configID != j.projectID {
-			continue
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return false, fmt.Errorf("read config %s: %w", filepath.Base(path), err)
-		}
-		var overlay json.RawMessage = content
-		var created explorerRevisionResponse
-		createPath := fmt.Sprintf("/gecko/explorer/%s/revisions", url.PathEscape(configID))
-		var header struct {
-			SchemaVersion int `json:"schemaVersion"`
-		}
-		_ = json.Unmarshal(content, &header)
-		if header.SchemaVersion >= 2 {
-			err = j.geckoJSON(http.MethodPost, createPath, map[string]any{"overlay": overlay, "targetExecutionId": executionID}, &created)
-		} else {
-			// Gecko's migration adapter accepts the complete legacy expanded
-			// document directly and preserves it while validating exact physical
-			// field names against the candidate schema.
-			err = j.geckoRawJSON(http.MethodPost, createPath, content, &created)
-		}
-		if err != nil {
-			return false, fmt.Errorf("create Gecko Explorer revision %s: %w", configID, err)
-		}
-		if strings.TrimSpace(created.RevisionID) == "" {
-			return false, fmt.Errorf("create Gecko Explorer revision %s: response has no revisionId", configID)
-		}
-		var validated explorerRevisionResponse
-		validatePath := fmt.Sprintf("/gecko/explorer/%s/revisions/%s/validate", url.PathEscape(configID), url.PathEscape(created.RevisionID))
-		if err := j.geckoJSON(http.MethodPost, validatePath, map[string]any{"loomExecutionId": executionID}, &validated); err != nil {
-			return false, fmt.Errorf("validate Gecko Explorer revision %s: %w", configID, err)
-		}
-		if !strings.EqualFold(validated.Status, "VALIDATED") && !strings.EqualFold(validated.Status, "VALID") && !strings.EqualFold(validated.Status, "VALID_WITH_OMISSIONS") {
-			return false, fmt.Errorf("validate Gecko Explorer revision %s: incompatible status %q", configID, validated.Status)
-		}
-		var activated explorerRevisionResponse
-		publishPath := fmt.Sprintf("/gecko/explorer/%s/revisions/%s/publish", url.PathEscape(configID), url.PathEscape(created.RevisionID))
-		if err := j.geckoJSON(http.MethodPost, publishPath, map[string]any{"loomExecutionId": executionID}, &activated); err != nil {
-			return false, fmt.Errorf("publish Gecko Explorer revision %s: %w", configID, err)
-		}
-		if !strings.EqualFold(activated.Status, "ACTIVE") {
-			return false, fmt.Errorf("publish Gecko Explorer revision %s: status %q, want ACTIVE", configID, activated.Status)
-		}
-		published = true
-		slog.Info("published compatible Loom and Gecko revisions", "config", configID, "config_revision", created.RevisionID, "loom_execution", executionID, "generation", generation)
-	}
-	return published, nil
-}
-
-func (j *job) geckoJSON(method, path string, input any, output any) error {
-	var encoded []byte
-	if input != nil {
-		var err error
-		encoded, err = json.Marshal(input)
-		if err != nil {
-			return err
-		}
-	}
-	return j.geckoRawJSON(method, path, encoded, output)
-}
-
-func (j *job) geckoRawJSON(method, path string, encoded []byte, output any) error {
-	var body io.Reader
-	if encoded != nil {
-		body = bytes.NewReader(encoded)
-	}
-	ctx, cancel := context.WithTimeout(j.ctx, requestTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(j.hostname, "/")+path, body)
+func (j *job) deployRepositoryExplorerConfigV2(definition json.RawMessage) error {
+	endpoint := fmt.Sprintf("%s/api/v1/projects/%s/generations/%s/explorer-config", j.loomURL, url.PathEscape(j.projectID), url.PathEscape(j.loomGeneration()))
+	endpoint += "?auth_resource_path=" + url.QueryEscape(fmt.Sprintf("/programs/%s/projects/%s", j.program, j.project))
+	req, err := http.NewRequestWithContext(j.ctx, http.MethodPost, endpoint, bytes.NewReader(definition))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "bearer "+j.token)
-	if encoded != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Loom-Source-Commit", j.input.GHCommitHash)
 	resp, err := j.httpClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("deploy ExplorerConfigV2: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return responseError(resp)
+		return fmt.Errorf("deploy ExplorerConfigV2: %w", responseError(resp))
 	}
-	if output == nil {
-		return nil
+	var deployed struct {
+		Project            string `json:"project"`
+		Generation         string `json:"generation"`
+		ExecutionID        string `json:"executionId"`
+		Recipe             string `json:"recipe"`
+		TranslationVersion string `json:"translationVersion"`
+		Activated          bool   `json:"activated"`
 	}
-	return json.NewDecoder(resp.Body).Decode(output)
-}
-
-// configuredOutputsFromExplorer returns the Loom data types referenced by the
-// repository's Explorer document. It understands both the legacy expanded
-// document and the semantic v2 overlay so recipe validation follows the
-// configuration being published instead of a hard-coded output list.
-func (j *job) configuredOutputsFromExplorer(dir string) ([]string, error) {
-	files, err := listJSON(dir)
-	if err != nil {
-		return nil, err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&deployed); err != nil {
+		return fmt.Errorf("deploy ExplorerConfigV2: decode Loom deployment response: %w", err)
 	}
-	seen := make(map[string]struct{})
-	for _, path := range files {
-		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		if base != j.projectID {
-			continue
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read config %s: %w", filepath.Base(path), err)
-		}
-		var document struct {
-			ExplorerConfig []struct {
-				DataType    string `json:"dataType"`
-				GuppyConfig struct {
-					DataType string `json:"dataType"`
-				} `json:"guppyConfig"`
-			} `json:"explorerConfig"`
-		}
-		if err := json.Unmarshal(content, &document); err != nil {
-			return nil, fmt.Errorf("parse explorer config %s: %w", filepath.Base(path), err)
-		}
-		for _, item := range document.ExplorerConfig {
-			dataType := strings.TrimSpace(item.DataType)
-			if dataType == "" {
-				dataType = strings.TrimSpace(item.GuppyConfig.DataType)
-			}
-			if dataType != "" {
-				seen[dataType] = struct{}{}
-			}
-		}
+	expectedRecipe := "explorer_" + j.projectID + "_default"
+	expectedTranslationVersion := "repository-" + j.input.GHCommitHash
+	if !deployed.Activated || deployed.Project != j.projectID || deployed.Generation != j.loomGeneration() || strings.TrimSpace(deployed.ExecutionID) == "" || deployed.Recipe != expectedRecipe || deployed.TranslationVersion != expectedTranslationVersion {
+		return fmt.Errorf("deploy ExplorerConfigV2: Loom returned an inconsistent deployment identity (project=%q generation=%q execution=%q recipe=%q translationVersion=%q activated=%t; expected project=%q generation=%q recipe=%q translationVersion=%q activated=true)", deployed.Project, deployed.Generation, deployed.ExecutionID, deployed.Recipe, deployed.TranslationVersion, deployed.Activated, j.projectID, j.loomGeneration(), expectedRecipe, expectedTranslationVersion)
 	}
-	outputs := make([]string, 0, len(seen))
-	for output := range seen {
-		outputs = append(outputs, output)
-	}
-	sort.Strings(outputs)
-	return outputs, nil
+	slog.Info("deployed repository ExplorerConfigV2", "project_id", deployed.Project, "generation", deployed.Generation, "execution_id", deployed.ExecutionID, "recipe", deployed.Recipe, "translation_version", deployed.TranslationVersion, "activated", deployed.Activated)
+	return nil
 }
 
 type recipeExecutionOutput struct {
